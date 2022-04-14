@@ -125,6 +125,11 @@ ARCHITECTURE Behavioral OF openxenium IS
 
    SIGNAL LPC_ADDRESS : STD_LOGIC_VECTOR (23 DOWNTO 0); -- LPC address width submitted on the bus is actually 32 bits, but we only need 24.
 
+   SIGNAL LPC_STATE_LED_EN : STD_LOGIC; -- Overlay LPC bus activity on the LED.
+   SIGNAL LPC_STATE_ACTIVE : STD_LOGIC;
+   SIGNAL LPC_STATE_WRITE : STD_LOGIC;
+   SIGNAL LPC_STATE_IO : STD_LOGIC;
+
    --XENIUM IO REGISTERS. BITS MARKED 'X' HAVE AN UNKNOWN FUNCTION OR ARE UNUSED. NEEDS MORE RE.
    --Bit masks are all shown upper nibble first.
 
@@ -132,7 +137,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    CONSTANT XENIUM_00EE : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EE"; -- RGB LED Control Register
    CONSTANT XENIUM_00EF : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EF"; -- SPI and Banking Control Register
    CONSTANT REG_00EE_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"AA"; -- OpenXenium QPI (OpenXenium & Genuine Xenium return 0x55)
-   SIGNAL REG_00EE_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := "00000001"; -- X,X,X,X,X,B,G,R (Red is default LED colour)
+   SIGNAL REG_00EE_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := "00000001"; -- X,X,X,X,X,B,G,R (Red is default LED colour on power-up)
    SIGNAL REG_00EF_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := "00000001"; -- X,SCK,CS,MOSI,BANK[3:0]
    SIGNAL REG_00EF_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := "01010101"; -- RECOVERY (Active Low),X,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
    SIGNAL BYTEBUFFER : STD_LOGIC_VECTOR (7 DOWNTO 0); -- Generic byte buffer
@@ -162,9 +167,15 @@ BEGIN
    HEADER_SCK <= REG_00EF_WRITE(6);
    HEADER_MOSI <= REG_00EF_WRITE(4);
 
-   HEADER_LED_R <= REG_00EE_WRITE(0);
-   HEADER_LED_G <= REG_00EE_WRITE(1);
-   HEADER_LED_B <= REG_00EE_WRITE(2);
+   HEADER_LED_R <= '1' WHEN LPC_STATE_LED_EN = '1' AND LPC_STATE_ACTIVE = '1' AND LPC_STATE_WRITE = '0' ELSE
+                   '0' WHEN LPC_STATE_LED_EN = '1' ELSE
+                   REG_00EE_WRITE(0);
+   HEADER_LED_G <= '1' WHEN LPC_STATE_LED_EN = '1' AND LPC_STATE_ACTIVE = '1' AND LPC_STATE_WRITE = '1' ELSE
+                   '0' WHEN LPC_STATE_LED_EN = '1' ELSE
+                   REG_00EE_WRITE(1);
+   HEADER_LED_B <= '1' WHEN LPC_STATE_LED_EN = '1' AND LPC_STATE_ACTIVE = '1' AND LPC_STATE_IO = '1' ELSE
+                   '0' WHEN LPC_STATE_LED_EN = '1' ELSE
+                   REG_00EE_WRITE(2);
 
    QPI_IO <= QPI_BUFFER(11 DOWNTO 8) WHEN QPI_EN_OUT = '1' AND QPI_EN_IN = '0' ELSE
              "ZZZZ";
@@ -185,6 +196,15 @@ BEGIN
               BYTEBUFFER(7 DOWNTO 4) WHEN LPC_CURRENT_STATE = READ_DATA1 ELSE
               "ZZZZ";
 
+   LPC_STATE_LED_EN <= '1' WHEN REG_00EE_WRITE(2 DOWNTO 0) = "000" ELSE
+                       '0';
+   LPC_STATE_ACTIVE <= '1' WHEN LPC_CURRENT_STATE /= WAIT_START AND LPC_CURRENT_STATE /= CYCTYPE_DIR ELSE
+                       '0';
+   LPC_STATE_WRITE <= '1' WHEN CYCLE_TYPE = IO_WRITE OR CYCLE_TYPE = MEM_WRITE ELSE
+                      '0';
+   LPC_STATE_IO <= '1' WHEN CYCLE_TYPE = IO_READ OR CYCLE_TYPE = IO_WRITE ELSE
+                   '0';
+
    --D0 has the following behaviour
    --Held low on boot to ensure it boots from the LPC then released when definitely booting from modchip.
    --When soldered to LFRAME it will simulate LPC transaction aborts for 1.6.
@@ -203,6 +223,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
       --LPC_RST goes low during boot up or hard reset.
       --We need to set D0 only if not TSOP booting.
       D0LEVEL <= '0';--TSOPBOOT;
+      REG_00EE_WRITE(2 DOWNTO 0) <= "000";
       QPI_EN_OUT <= '0';
       QPI_EN_IN <= '0';
       CYCLE_TYPE <= IO_READ;
