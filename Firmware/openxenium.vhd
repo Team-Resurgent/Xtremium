@@ -376,48 +376,54 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             LPC_CURRENT_STATE <= TAR2;
          WHEN TAR2 =>
             LPC_CURRENT_STATE <= SYNCING;
-            COUNT <= 6;
+            COUNT <= 5;
 
          --SYNCING STAGE
          WHEN SYNCING =>
             COUNT <= COUNT - 1;
-            IF COUNT = 5 THEN
-               IF CYCLE_TYPE = MEM_WRITE THEN
-                  QPI_EN_OUT <= '0';
-               END IF;
-            ELSIF COUNT = 4 THEN
-               IF CYCLE_TYPE = MEM_READ THEN
-                  QPI_EN_OUT <= '0';
-                  QPI_EN_IN <= '1';
-               END IF;
-            ELSIF COUNT = 3 THEN
-               IF CYCLE_TYPE = MEM_READ THEN
-                  BYTEBUFFER(7 DOWNTO 4) <= QPI_IO;
-               END IF;
-            ELSIF COUNT = 2 THEN
-               IF CYCLE_TYPE = MEM_READ THEN
-                  BYTEBUFFER(3 DOWNTO 0) <= QPI_IO;
-               END IF;
-            ELSIF COUNT = 1 THEN
-               IF CYCLE_TYPE = MEM_READ THEN
-                  QPI_EN_IN <= '0';
-               ELSIF CYCLE_TYPE = IO_READ THEN
+            IF COUNT = 4 THEN
+               IF CYCLE_TYPE = IO_READ THEN
                   IF LPC_ADDRESS(15 DOWNTO 0) = XENIUM_00EF THEN
                      BYTEBUFFER <= REG_00EF_READ;
                   ELSE
                      BYTEBUFFER <= REG_00EE_READ;
                   END IF;
+                  LPC_CURRENT_STATE <= SYNC_COMPLETE;
                ELSIF CYCLE_TYPE = IO_WRITE THEN
                   IF LPC_ADDRESS(15 DOWNTO 0) = XENIUM_00EF THEN
                      REG_00EF_WRITE(7 DOWNTO 4) <= BYTEBUFFER(7 DOWNTO 4);
-                     IF BYTEBUFFER(3 DOWNTO 0) /= x"0" THEN -- Must be a valid bank greater than 0.
-                        REG_00EF_WRITE(3 DOWNTO 0) <= BYTEBUFFER(3 DOWNTO 0);
+                     IF BYTEBUFFER(3 DOWNTO 0) /= x"0" THEN
+                        -- Must be a valid bank between 1 to 3.
+                        IF BYTEBUFFER(3 DOWNTO 0) = x"2" OR BYTEBUFFER(3 DOWNTO 0) = x"3" THEN
+                           REG_00EF_WRITE(3 DOWNTO 0) <= BYTEBUFFER(3 DOWNTO 0);
+                        ELSE
+                           REG_00EF_WRITE(3 DOWNTO 0) <= x"1";
+                        END IF;
                      END IF;
                   ELSE
                      REG_00EE_WRITE <= BYTEBUFFER;
                   END IF;
+                  LPC_CURRENT_STATE <= SYNC_COMPLETE;
+               ELSIF CYCLE_TYPE = MEM_WRITE THEN
+                  QPI_EN_OUT <= '0';
+               END IF;
+            ELSIF COUNT = 3 THEN
+               IF CYCLE_TYPE = MEM_READ THEN
+                  QPI_EN_OUT <= '0';
+                  QPI_EN_IN <= '1';
+               END IF;
+            ELSIF COUNT = 2 THEN
+               IF CYCLE_TYPE = MEM_READ THEN
+                  BYTEBUFFER(7 DOWNTO 4) <= QPI_IO;
+               END IF;
+            ELSIF COUNT = 1 THEN
+               IF CYCLE_TYPE = MEM_READ THEN
+                  BYTEBUFFER(3 DOWNTO 0) <= QPI_IO;
                END IF;
             ELSIF COUNT = 0 THEN
+               IF CYCLE_TYPE = MEM_READ THEN
+                  QPI_EN_IN <= '0';
+               END IF;
                LPC_CURRENT_STATE <= SYNC_COMPLETE;
             END IF;
          WHEN SYNC_COMPLETE =>
