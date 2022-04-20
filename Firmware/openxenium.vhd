@@ -60,7 +60,7 @@
 --X,SCK,CS,MOSI,BANK[3:0]
 --
 --**0xEF READ:**
---RECOVERY (Active Low),X,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
+--RECOVERY (Active Low),A20MLEVEL (Active Low),MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
 --
 --**0xEE WRITE:**
 --X,X,X,X,X,B,G,R (DEFAULT LED ON POWER UP IS RED)
@@ -79,9 +79,12 @@ ENTITY openxenium IS
       HEADER_CS : OUT STD_LOGIC;
       HEADER_SCK : OUT STD_LOGIC;
       HEADER_MOSI : OUT STD_LOGIC;
-      HEADER_LED_R : OUT STD_LOGIC;
-      HEADER_LED_G : OUT STD_LOGIC;
-      HEADER_LED_B : OUT STD_LOGIC;
+
+      MOSFET_LED_R : OUT STD_LOGIC;
+      MOSFET_LED_G : OUT STD_LOGIC;
+      MOSFET_LED_B : OUT STD_LOGIC;
+      MOSFET_D0 : OUT STD_LOGIC;
+      MOSFET_A20M : OUT STD_LOGIC;
 
       QPI_IO : INOUT STD_LOGIC_VECTOR (3 DOWNTO 0);
       QPI_CS : OUT STD_LOGIC_VECTOR (2 DOWNTO 0);
@@ -90,10 +93,8 @@ ENTITY openxenium IS
       LPC_CLK : IN STD_LOGIC;
       LPC_RST : IN STD_LOGIC;
 
-      XENIUM_RECOVERY : IN STD_LOGIC; -- Recovery is active low and requires an external pull-up resistor to 3.3V.
-      XENIUM_D0 : OUT STD_LOGIC
+      SWITCH_RECOVERY : IN STD_LOGIC -- Recovery is active low and requires an external pull-up resistor to 3.3V.
    );
-
 END openxenium;
 
 ARCHITECTURE Behavioral OF openxenium IS
@@ -124,26 +125,25 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL CYCLE_TYPE : CYC_TYPE := IO_READ;
 
    SIGNAL LPC_ADDRESS : STD_LOGIC_VECTOR (23 DOWNTO 0); -- LPC address width submitted on the bus is actually 32 bits, but we only need 24.
+   SIGNAL LPC_BUFFER : STD_LOGIC_VECTOR (7 DOWNTO 0); -- Generic byte buffer
 
    SIGNAL LPC_STATE_LED_EN : STD_LOGIC; -- Overlay LPC bus activity on the LED.
    SIGNAL LPC_STATE_ACTIVE : STD_LOGIC;
    SIGNAL LPC_STATE_WRITE : STD_LOGIC;
    SIGNAL LPC_STATE_IO : STD_LOGIC;
 
-   --XENIUM IO REGISTERS. BITS MARKED 'X' HAVE AN UNKNOWN FUNCTION OR ARE UNUSED. NEEDS MORE RE.
+   --IO READ/WRITE REGISTERS VISIBLE TO THE LPC BUS
+   --BITS MARKED 'X' HAVE AN UNKNOWN FUNCTION OR ARE UNUSED.
    --Bit masks are all shown upper nibble first.
-
-   --IO READ/WRITE REGISTERS
    CONSTANT XENIUM_00EE : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EE"; -- RGB LED Control Register
    CONSTANT XENIUM_00EF : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EF"; -- SPI and Banking Control Register
    CONSTANT REG_00EE_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"AA"; -- OpenXenium QPI (OpenXenium & Genuine Xenium return 0x55)
    SIGNAL REG_00EE_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := "00000001"; -- X,X,X,X,X,B,G,R (Red is default LED colour on power-up)
    SIGNAL REG_00EF_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := "00000001"; -- X,SCK,CS,MOSI,BANK[3:0]
-   SIGNAL REG_00EF_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := "01010101"; -- RECOVERY (Active Low),X,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
-   SIGNAL BYTEBUFFER : STD_LOGIC_VECTOR (7 DOWNTO 0); -- Generic byte buffer
+   SIGNAL REG_00EF_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := "01010101"; -- RECOVERY (Active Low),A20MLEVEL (Active Low),MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
 
    --QPI READ/WRITE REGISTERS FOR FLASH MEMORY
-   -- QPI Instructions (W25Q128JV-DTR Rev C section 6.1.4)
+   --QPI Instructions (W25Q128JV-DTR Rev C section 6.1.4)
    CONSTANT QPI_INST_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"EB"; -- Fast Read Quad I/O in QPI Mode (W25Q128JV-DTR Rev C section 8.2.14)
    CONSTANT QPI_INST_WR_EN : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"06"; -- Write Enable (W25Q128JV-DTR Rev C section 8.2.1)
    CONSTANT QPI_INST_WR_DI : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"04"; -- Write Disable (W25Q128JV-DTR Rev C section 8.2.3)
@@ -153,10 +153,23 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL QPI_EN_OUT : STD_LOGIC := '0';
    SIGNAL QPI_EN_IN : STD_LOGIC := '0';
 
-   --TSOPBOOT IS SET TO '1' WHEN YOU REQUEST TO BOOT FROM TSOP. THIS PREVENTS THE CPLD FROM DRIVING D0.
-   --D0LEVEL is inverted and connected to the D0 output pad. This allows the CPLD to latch/release the D0/LFRAME signal.
---   SIGNAL TSOPBOOT : STD_LOGIC := '0';
+   --TSOPBOOT IS SET TO '1' WHEN YOU REQUEST TO BOOT FROM TSOP.
+   --THIS SIGNAL PREVENTS THE CPLD FROM DRIVING ANY PINS, EVEN ON RESET.
+   --Only a power cycle will reset this signal.
+   SIGNAL TSOPBOOT : STD_LOGIC := '0';
+
+   --D0LEVEL is inverted and connected to MOSFET_D0.
+   --This signal allows to latch/release D0 (and LFRAME).
    SIGNAL D0LEVEL : STD_LOGIC := '0';
+
+   --A20MLEVEL is inverted and connected to MOSFET_A20M.
+   --On reset (A20MLEVEL is '0'), the signal restricts write access to flash memory,
+   --as well as access to the rest of flash memory (bottom 15MiB), and the A20M# pin on the CPU is asserted.
+   --On read at IO address 0x00EE, the A20M# pin on the CPU is deasserted (A20MLEVEL is '1') until next reset,
+   --and all of flash memory is available to the CPU.
+   --By default on power-up (A20MLEVEL is '1'), the set signal allows for hotswapping and programming,
+   --and simply cannot assert the A20M# pin until next reset.
+   SIGNAL A20MLEVEL : STD_LOGIC := '1';
 
    --GENERIC COUNTER USED TO TRACK ADDRESS AND SYNC COUNTERS.
    SIGNAL COUNT : INTEGER RANGE 0 TO 7;
@@ -167,19 +180,18 @@ BEGIN
    HEADER_SCK <= REG_00EF_WRITE(6);
    HEADER_MOSI <= REG_00EF_WRITE(4);
 
-   HEADER_LED_R <= '1' WHEN LPC_STATE_LED_EN = '1' AND LPC_STATE_ACTIVE = '1' AND LPC_STATE_WRITE = '0' ELSE
-                   '0' WHEN LPC_STATE_LED_EN = '1' ELSE
+   MOSFET_LED_R <= '1' WHEN LPC_STATE_LED_EN = '1' AND LPC_STATE_ACTIVE = '1' AND LPC_STATE_WRITE = '0' ELSE
+                   '0' WHEN LPC_STATE_LED_EN = '1' OR TSOPBOOT = '1' ELSE
                    REG_00EE_WRITE(0);
-   HEADER_LED_G <= '1' WHEN LPC_STATE_LED_EN = '1' AND LPC_STATE_ACTIVE = '1' AND LPC_STATE_WRITE = '1' ELSE
-                   '0' WHEN LPC_STATE_LED_EN = '1' ELSE
+   MOSFET_LED_G <= '1' WHEN LPC_STATE_LED_EN = '1' AND LPC_STATE_ACTIVE = '1' AND LPC_STATE_WRITE = '1' ELSE
+                   '0' WHEN LPC_STATE_LED_EN = '1' OR TSOPBOOT = '1' ELSE
                    REG_00EE_WRITE(1);
-   HEADER_LED_B <= '1' WHEN LPC_STATE_LED_EN = '1' AND LPC_STATE_ACTIVE = '1' AND LPC_STATE_IO = '1' ELSE
-                   '0' WHEN LPC_STATE_LED_EN = '1' ELSE
+   MOSFET_LED_B <= '1' WHEN LPC_STATE_LED_EN = '1' AND LPC_STATE_ACTIVE = '1' AND LPC_STATE_IO = '1' ELSE
+                   '0' WHEN LPC_STATE_LED_EN = '1' OR TSOPBOOT = '1' ELSE
                    REG_00EE_WRITE(2);
 
    QPI_IO <= QPI_BUFFER(11 DOWNTO 8) WHEN QPI_EN_OUT = '1' AND QPI_EN_IN = '0' ELSE
              "ZZZZ";
-
    QPI_CS <= "111" WHEN QPI_EN_OUT = '0' AND QPI_EN_IN = '0' ELSE
              "011" WHEN REG_00EF_WRITE(3 DOWNTO 0) = x"3" ELSE -- Bank 3 (U4)
              "101" WHEN REG_00EF_WRITE(3 DOWNTO 0) = x"2" ELSE -- Bank 2 (U3)
@@ -192,11 +204,11 @@ BEGIN
               "0101" WHEN LPC_CURRENT_STATE = SYNCING ELSE
               "1111" WHEN LPC_CURRENT_STATE = TAR2 ELSE
               "1111" WHEN LPC_CURRENT_STATE = TAR_EXIT ELSE
-              BYTEBUFFER(3 DOWNTO 0) WHEN LPC_CURRENT_STATE = READ_DATA0 ELSE -- This happens lower nibble first! (Refer to Intel LPC spec)
-              BYTEBUFFER(7 DOWNTO 4) WHEN LPC_CURRENT_STATE = READ_DATA1 ELSE
+              LPC_BUFFER(3 DOWNTO 0) WHEN LPC_CURRENT_STATE = READ_DATA0 ELSE -- This happens lower nibble first! (Refer to Intel LPC spec)
+              LPC_BUFFER(7 DOWNTO 4) WHEN LPC_CURRENT_STATE = READ_DATA1 ELSE
               "ZZZZ";
 
-   LPC_STATE_LED_EN <= '1' WHEN REG_00EE_WRITE(2 DOWNTO 0) = "000" ELSE
+   LPC_STATE_LED_EN <= '1' WHEN TSOPBOOT = '0' AND REG_00EE_WRITE(2 DOWNTO 0) = "000" ELSE
                        '0';
    LPC_STATE_ACTIVE <= '1' WHEN LPC_CURRENT_STATE /= WAIT_START AND LPC_CURRENT_STATE /= CYCTYPE_DIR ELSE
                        '0';
@@ -205,24 +217,34 @@ BEGIN
    LPC_STATE_IO <= '1' WHEN CYCLE_TYPE = IO_READ OR CYCLE_TYPE = IO_WRITE ELSE
                    '0';
 
-   --D0 has the following behaviour
-   --Held low on boot to ensure it boots from the LPC then released when definitely booting from modchip.
-   --When soldered to LFRAME it will simulate LPC transaction aborts for 1.6.
-   --Released for TSOP booting.
-   --NOTE: XENIUM_D0 is an output to a mosfet driver. '0' turns off the MOSFET releasing D0
-   --and a value of '1' turns on the MOSFET forcing it to ground. This is why I invert D0LEVEL before mapping it.
-   XENIUM_D0 <= --'0' WHEN TSOPBOOT = '1' ELSE
+   --The D0 pad has the following behaviour:
+   ---Held low on boot to ensure the Xbox boots from the LPC bus, then released after a few memory reads.
+   ---When soldered and bridged to the LFRAME pad, this will simulate LPC transaction aborts for a v1.6 Xbox mainboard.
+   ---Released when booting from TSOP.
+   --NOTE: MOSFET_D0 is an output to a MOSFET driver. '0' turns off the MOSFET, leaving the pad floating,
+   --and '1' turns on the MOSFET, forcing the pad to ground. This is why D0LEVEL is inverted before mapping it.
+   MOSFET_D0 <= '0' WHEN TSOPBOOT = '1' ELSE
                 '1' WHEN CYCLE_TYPE = MEM_READ ELSE
                 '1' WHEN CYCLE_TYPE = MEM_WRITE ELSE
                 NOT D0LEVEL;
 
-   REG_00EF_READ <= XENIUM_RECOVERY & '0' & HEADER_MISO2 & HEADER_MISO1 & REG_00EF_WRITE(3 DOWNTO 0);
+   --The A20M# pad controls the A20M# pin on the CPU, intended to bypass the hidden 1BL ROM in the MCPX X3 southbridge.
+   --NOTE: MOSFET_A20M is an output to a MOSFET driver. '0' turns off the MOSFET, leaving the pad floating,
+   --and '1' turns on the MOSFET, forcing the pad to ground. A20MLEVEL is inverted and connected to MOSFET_A20M,
+   --hence MOSFET is on at reset (not at power-up), asserting the A20M# pin.
+   MOSFET_A20M <= '0' WHEN TSOPBOOT = '1' ELSE
+                  NOT A20MLEVEL;
+
+   REG_00EF_READ <= SWITCH_RECOVERY & A20MLEVEL & HEADER_MISO2 & HEADER_MISO1 & REG_00EF_WRITE(3 DOWNTO 0);
 
 PROCESS (LPC_CLK, LPC_RST) BEGIN
    IF LPC_RST = '0' THEN
       --LPC_RST goes low during boot up or hard reset.
-      --We need to set D0 only if not TSOP booting.
-      D0LEVEL <= '0';--TSOPBOOT;
+      --Hold D0 low to boot from the LPC bus, only if not booting from TSOP.
+      D0LEVEL <= TSOPBOOT;
+      --Assert the A20M# pin on the CPU, only if not booting from TSOP.
+      A20MLEVEL <= TSOPBOOT;
+      --Reset LED state.
       REG_00EE_WRITE(2 DOWNTO 0) <= "000";
       QPI_EN_OUT <= '0';
       QPI_EN_IN <= '0';
@@ -233,8 +255,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
       CASE LPC_CURRENT_STATE IS
          WHEN WAIT_START =>
             CYCLE_TYPE <= IO_READ;
-            IF LPC_LAD = "0000" --AND TSOPBOOT = '0' 
-            THEN
+            IF LPC_LAD = "0000" AND TSOPBOOT = '0' THEN
                LPC_CURRENT_STATE <= CYCTYPE_DIR;
             END IF;
          WHEN CYCTYPE_DIR =>
@@ -256,7 +277,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                LPC_CURRENT_STATE <= ADDRESS;
                -- Write Protect Features (W25Q128JV-DTR Rev C section 6.2.1 paragraph 2)
                QPI_EN_OUT <= '1';
-               IF XENIUM_RECOVERY = '0' THEN
+               IF SWITCH_RECOVERY = '0' AND A20MLEVEL = '1' THEN
                   QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_WR_EN;
                ELSE
                   QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_WR_DI;
@@ -276,15 +297,20 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                END IF;
             ELSIF COUNT = 5 THEN
                QPI_EN_OUT <= '1';
-               QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
-               LPC_ADDRESS(23 DOWNTO 20) <= LPC_LAD;
+               IF A20MLEVEL = '0' THEN
+                  -- Wrap-around top 1MiB of flash memory until the A20M# pin on the CPU is deasserted.
+                  QPI_BUFFER(3 DOWNTO 0) <= x"F";
+                  LPC_ADDRESS(23 DOWNTO 20) <= x"F";
+               ELSE
+                  QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
+                  LPC_ADDRESS(23 DOWNTO 20) <= LPC_LAD;
+               END IF;
             ELSIF COUNT = 4 THEN
                QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
                LPC_ADDRESS(19 DOWNTO 16) <= LPC_LAD;
                --BANK CONTROL
                -- Set recovery bank if switch is activated
---               IF XENIUM_RECOVERY = '0' --AND TSOPBOOT = '0' 
---               AND D0LEVEL = '0' THEN
+--               IF SWITCH_RECOVERY = '0' AND TSOPBOOT = '0' AND D0LEVEL = '0' THEN
 --                  REG_00EF_WRITE(3 DOWNTO 0) <= "1010";
 --               END IF;
 --               CASE REG_00EF_WRITE(3 DOWNTO 0) IS
@@ -320,8 +346,8 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
 --                     LPC_ADDRESS(20 DOWNTO 18) <= "111"; --256kb bank
 ----                  WHEN "0000" =>
                      --Bank zero will disable modchip and release D0 and reset state machine.
-----                     LPC_CURRENT_STATE <= WAIT_START;
 ----                     TSOPBOOT <= '1';
+----                     LPC_CURRENT_STATE <= WAIT_START;
 --                  WHEN OTHERS =>
 --               END CASE;
             ELSIF COUNT = 3 THEN
@@ -355,14 +381,14 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
 
          --MEMORY OR IO WRITES
          WHEN WRITE_DATA0 =>
-            BYTEBUFFER(3 DOWNTO 0) <= LPC_LAD; -- This happens lower nibble first! (Refer to Intel LPC spec)
+            LPC_BUFFER(3 DOWNTO 0) <= LPC_LAD; -- This happens lower nibble first! (Refer to Intel LPC spec)
             LPC_CURRENT_STATE <= WRITE_DATA1;
          WHEN WRITE_DATA1 =>
             IF CYCLE_TYPE = MEM_WRITE THEN
                QPI_BUFFER(7 DOWNTO 4) <= LPC_LAD;
-               QPI_BUFFER(3 DOWNTO 0) <= BYTEBUFFER(3 DOWNTO 0);
+               QPI_BUFFER(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
             END IF;
-            BYTEBUFFER(7 DOWNTO 4) <= LPC_LAD;
+            LPC_BUFFER(7 DOWNTO 4) <= LPC_LAD;
             LPC_CURRENT_STATE <= TAR1;
 
          --MEMORY OR IO READS
@@ -384,24 +410,26 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             IF COUNT = 4 THEN
                IF CYCLE_TYPE = IO_READ THEN
                   IF LPC_ADDRESS(15 DOWNTO 0) = XENIUM_00EF THEN
-                     BYTEBUFFER <= REG_00EF_READ;
+                     LPC_BUFFER <= REG_00EF_READ;
                   ELSE
-                     BYTEBUFFER <= REG_00EE_READ;
+                     LPC_BUFFER <= REG_00EE_READ;
+                     -- Deassert the A20M# pin on the CPU.
+                     A20MLEVEL <= '1';
                   END IF;
                   LPC_CURRENT_STATE <= SYNC_COMPLETE;
                ELSIF CYCLE_TYPE = IO_WRITE THEN
                   IF LPC_ADDRESS(15 DOWNTO 0) = XENIUM_00EF THEN
-                     REG_00EF_WRITE(7 DOWNTO 4) <= BYTEBUFFER(7 DOWNTO 4);
-                     IF BYTEBUFFER(3 DOWNTO 0) /= x"0" THEN
+                     REG_00EF_WRITE(7 DOWNTO 4) <= LPC_BUFFER(7 DOWNTO 4);
+                     IF LPC_BUFFER(3 DOWNTO 0) /= x"0" THEN
                         -- Must be a valid bank between 1 to 3.
-                        IF BYTEBUFFER(3 DOWNTO 0) = x"2" OR BYTEBUFFER(3 DOWNTO 0) = x"3" THEN
-                           REG_00EF_WRITE(3 DOWNTO 0) <= BYTEBUFFER(3 DOWNTO 0);
+                        IF LPC_BUFFER(3 DOWNTO 0) = x"2" OR LPC_BUFFER(3 DOWNTO 0) = x"3" THEN
+                           REG_00EF_WRITE(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
                         ELSE
                            REG_00EF_WRITE(3 DOWNTO 0) <= x"1";
                         END IF;
                      END IF;
                   ELSE
-                     REG_00EE_WRITE <= BYTEBUFFER;
+                     REG_00EE_WRITE <= LPC_BUFFER;
                   END IF;
                   LPC_CURRENT_STATE <= SYNC_COMPLETE;
                ELSIF CYCLE_TYPE = MEM_WRITE THEN
@@ -414,11 +442,11 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                END IF;
             ELSIF COUNT = 2 THEN
                IF CYCLE_TYPE = MEM_READ THEN
-                  BYTEBUFFER(7 DOWNTO 4) <= QPI_IO;
+                  LPC_BUFFER(7 DOWNTO 4) <= QPI_IO;
                END IF;
             ELSIF COUNT = 1 THEN
                IF CYCLE_TYPE = MEM_READ THEN
-                  BYTEBUFFER(3 DOWNTO 0) <= QPI_IO;
+                  LPC_BUFFER(3 DOWNTO 0) <= QPI_IO;
                END IF;
             ELSIF COUNT = 0 THEN
                IF CYCLE_TYPE = MEM_READ THEN
@@ -435,9 +463,9 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
 
          --TURN BUS AROUND (PERIPHERAL TO HOST)
          WHEN TAR_EXIT =>
-            --D0 is held low until a few memory reads
-            --This ensures it is booting from the modchip. Genuine Xenium arbitrarily
-            --releases after the 5th read. This is always address 0x74.
+            --D0 is held low until a few memory reads.
+            --This ensures that the Xbox is booting from the LPC bus.
+            --Genuine Xenium arbitrarily releases after the 5th read at address 0x74.
             IF LPC_ADDRESS(7 DOWNTO 0) = x"74" THEN
                D0LEVEL <= '1';
             END IF;
