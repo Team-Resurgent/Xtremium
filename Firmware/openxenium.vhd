@@ -25,28 +25,31 @@
 --
 --
 --**BANK SELECTION**
---Bank selection is controlled by the lower nibble of address REG_00EF.
---A20,A19,A18 are address lines to the parallel flash memory.
---lines marked X means it is not forced by the CPLD for banking purposes.
---This is how is works:
+--Bank selection is controlled by the lower nibble of IO address 0x00EF.
+--A20,A19,A18 are masked address lines to the flash memory.
+--'X' means the address line is not masked by the CPLD for banking purposes.
 --
---REGISTER 0xEF Bank Commands:
---BANK NAME                  DATA BYTE    A20|A19|A18 ADDRESS OFFSET
---TSOP                       XXXX 0000     X |X |X    N/A.     (This locks up the Xenium to force it to boot from TSOP.)
---XeniumOS(c.well loader)    XXXX 0001     1 |1 |0    0x180000 (This is the default boot state. Contains Cromwell bootloader)
---XeniumOS                   XXXX 0010     1 |0 |X    0x100000 (This is a 512kb bank and contains XeniumOS)
---BANK1 (USER BIOS 256kB)    XXXX 0011     0 |0 |0    0x000000
---BANK2 (USER BIOS 256kB)    XXXX 0100     0 |0 |1    0x040000
---BANK3 (USER BIOS 256kB)    XXXX 0101     0 |1 |0    0x080000
---BANK4 (USER BIOS 256kB)    XXXX 0110     0 |1 |1    0x0C0000
---BANK1 (USER BIOS 512kB)    XXXX 0111     0 |0 |X    0x000000
---BANK2 (USER BIOS 512kB)    XXXX 1000     0 |1 |X    0x080000
---BANK1 (USER BIOS 1MB)      XXXX 1001     0 |X |X    0x000000
---RECOVERY (NOTE 1)          XXXX 1010     1 |1 |1    0x1C0000
+--REGISTER 0x00EF Bank Commands:
+--BANK # NAME                 A20|A19|A18 OFFSET   SIZE   ADDRESS           NOTE
+--     0 (TSOP)                X |X |X    N/A      N/A    N/A               This prevents the CPLD from driving any pins for TSOP boot.
+--     1 XeniumOS (loader)     1 |1 |0    0x180000 256KiB 0xF80000-0xFBFFFF This is the default boot bank & contains XeniumOS's Cromwell bootloader.
+--     2 XeniumOS              1 |0 |X    0x100000 512KiB 0xF00000-0xF7FFFF Contains XeniumOS.
+--     3 BANK1 (USER BIOS)     0 |0 |0    0x000000 256KiB 0xE00000-0xE3FFFF
+--     4 BANK2 (USER BIOS)     0 |0 |1    0x040000 256KiB 0xE40000-0xE7FFFF
+--     5 BANK3 (USER BIOS)     0 |1 |0    0x080000 256KiB 0xE80000-0xEBFFFF
+--     6 BANK4 (USER BIOS)     0 |1 |1    0x0C0000 256KiB 0xEC0000-0xEFFFFF
+--     7 BANK1 (USER BIOS)     0 |0 |X    0x000000 512KiB 0xE00000-0xE7FFFF
+--     8 BANK2 (USER BIOS)     0 |1 |X    0x080000 512KiB 0xE80000-0xEFFFFF
+--     9 BANK1 (USER BIOS)     0 |X |X    0x000000 1MiB   0xE00000-0xEFFFFF
+--    10 RECOVERY              1 |1 |1    0x1C0000 256KiB 0xFC0000-0xFFFFFF See NOTE 1.
+--    11 (No address masking)  X |X |X    N/A      16MiB  0x000000-0xFFFFFF This maps all of flash memory into the LPC MMIO window (0xFF000000-0xFFFFFFFF).
+--    12 (U2 QPI Chip Select)  X |X |X    N/A      N/A    N/A               This is the default selected chip.
+--    13 (U3 QPI Chip Select)  X |X |X    N/A      N/A    N/A
+--    14 (U4 QPI Chip Select)  X |X |X    N/A      N/A    N/A
+--    15 (U2 QPI Chip Select)  X |X |X    N/A      N/A    N/A
 --
---
---NOTE 1: The RECOVERY bank can also be actived by the physical switch on the Xenium. This forces bank ten (0b1010) on power up.
---This bank also contains non-volatile storage of settings an EEPROM backup in the smaller sectors at the end of the flash memory.
+--NOTE 1: The RECOVERY bank can also be activated by the physical switch on the Xenium. This sets bank 10 on power-up.
+--This bank also contains non-volatile storage of settings & an EEPROM backup in the smaller sectors at the end of the flash memory.
 --The memory map is shown below:
 --     (1C0000 to 1DFFFF PROTECTED AREA 128kbyte recovery bios)
 --     (1E0000 to 1FBFFF Additional XeniumOS Data)
@@ -56,16 +59,16 @@
 --**XENIUM CONTROL WRITE/READ REGISTERS**
 --Bits marked 'X' either have no function or an unknown function.
 --
---**0xEF WRITE:**
+--**0x00EF WRITE:**
 --X,SCK,CS,MOSI,BANK[3:0]
 --
---**0xEF READ:**
+--**0x00EF READ:**
 --RECOVERY (Active Low),X,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
 --
---**0xEE WRITE:**
+--**0x00EE WRITE:**
 --X,X,X,X,X,B,G,R (DEFAULT LED ON POWER UP IS RED)
 --
---**0xEE READ:**
+--**0x00EE READ:**
 --Returns 0xAA for OpenXenium QPI (OpenXenium & Genuine Xenium return 0x55)
 --
 
@@ -123,14 +126,11 @@ ARCHITECTURE Behavioral OF openxenium IS
 
    SIGNAL LPC_CURRENT_STATE : LPC_STATE_MACHINE := WAIT_START;
    SIGNAL CYCLE_TYPE : CYC_TYPE := IO_READ;
-
-   SIGNAL LPC_ADDRESS : STD_LOGIC_VECTOR (23 DOWNTO 0); -- LPC address width submitted on the bus is actually 32 bits, but we only need 24.
-   SIGNAL LPC_BUFFER : STD_LOGIC_VECTOR (7 DOWNTO 0); -- Generic byte buffer
-
-   SIGNAL LPC_CYCLE_LED_EN : STD_LOGIC; -- Overlay LPC bus activity on the LED.
    SIGNAL LPC_CYCLE_ACTIVE : STD_LOGIC;
    SIGNAL LPC_CYCLE_WRITE : STD_LOGIC;
    SIGNAL LPC_CYCLE_MEM : STD_LOGIC;
+   SIGNAL LPC_ADDRESS : STD_LOGIC_VECTOR (23 DOWNTO 0); -- LPC address width submitted on the bus is actually 32 bits, but we only need 24.
+   SIGNAL LPC_BUFFER : STD_LOGIC_VECTOR (7 DOWNTO 0); -- Generic byte buffer
 
    --IO READ/WRITE REGISTERS VISIBLE TO THE LPC BUS
    --BITS MARKED 'X' HAVE AN UNKNOWN FUNCTION OR ARE UNUSED.
@@ -141,7 +141,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL REG_00EE_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := "00000001"; -- X,X,X,X,X,B,G,R (Red is default LED colour on power-up)
    SIGNAL REG_00EF_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := "00000001"; -- X,SCK,CS,MOSI,BANK[3:0]
    SIGNAL REG_00EF_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := "01010101"; -- RECOVERY (Active Low),X,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
---   SIGNAL SWITCH_RECOVER_LATCH : STD_LOGIC := '0';
+   SIGNAL SWITCH_RECOVER_LATCH : STD_LOGIC := '0';
 
    --QPI READ/WRITE REGISTERS FOR FLASH MEMORY
    --QPI Instructions (W25Q128JV-DTR Rev C section 6.1.4)
@@ -159,7 +159,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL QPI_EN_OUT : STD_LOGIC := '0';
    SIGNAL QPI_EN_IN : STD_LOGIC := '0';
 
-   --SOFTWARE DATA PROTECTION (SDP) THREE-BYTE COMMAND SEQUENCE
+   --SOFTWARE DATA PROTECTION (SDP) COMMAND SEQUENCE
    CONSTANT SDP_TICK_ADDR : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"AAAA";
    CONSTANT SDP_TICK_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"AA";
    CONSTANT SDP_TOCK_ADDR : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"5555";
@@ -206,15 +206,9 @@ BEGIN
    HEADER_SCK <= REG_00EF_WRITE(6);
    HEADER_MOSI <= REG_00EF_WRITE(4);
 
-   MOSFET_LED_R <= '1' WHEN LPC_CYCLE_LED_EN = '1' AND LPC_CYCLE_ACTIVE = '1' AND LPC_CYCLE_WRITE = '0' ELSE
-                   '0' WHEN LPC_CYCLE_LED_EN = '1' OR TSOPBOOT = '1' ELSE
-                   REG_00EE_WRITE(0);
-   MOSFET_LED_G <= '1' WHEN LPC_CYCLE_LED_EN = '1' AND LPC_CYCLE_ACTIVE = '1' AND LPC_CYCLE_WRITE = '1' ELSE
-                   '0' WHEN LPC_CYCLE_LED_EN = '1' OR TSOPBOOT = '1' ELSE
-                   REG_00EE_WRITE(1);
-   MOSFET_LED_B <= '1' WHEN LPC_CYCLE_LED_EN = '1' AND LPC_CYCLE_ACTIVE = '1' AND LPC_CYCLE_MEM = '0' ELSE
-                   '0' WHEN LPC_CYCLE_LED_EN = '1' OR TSOPBOOT = '1' ELSE
-                   REG_00EE_WRITE(2);
+   MOSFET_LED_R <= REG_00EE_WRITE(0);
+   MOSFET_LED_G <= REG_00EE_WRITE(1);
+   MOSFET_LED_B <= REG_00EE_WRITE(2);
 
    QPI_IO <= QPI_BUFFER(11 DOWNTO 8) WHEN QPI_EN_OUT = '1' AND QPI_EN_IN = '0' ELSE
              "ZZZZ";
@@ -234,8 +228,6 @@ BEGIN
               LPC_BUFFER(7 DOWNTO 4) WHEN LPC_CURRENT_STATE = READ_DATA1 ELSE
               "ZZZZ";
 
-   LPC_CYCLE_LED_EN <= '1' WHEN TSOPBOOT = '0' AND REG_00EE_WRITE(2 DOWNTO 0) = "000" ELSE
-                       '0';
    LPC_CYCLE_ACTIVE <= '1' WHEN LPC_CURRENT_STATE /= WAIT_START AND LPC_CURRENT_STATE /= CYCTYPE_DIR ELSE
                        '0';
    LPC_CYCLE_WRITE <= '1' WHEN CYCLE_TYPE = IO_WRITE OR CYCLE_TYPE = MEM_WRITE ELSE
@@ -270,8 +262,6 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
       D0LEVEL <= TSOPBOOT;
       --Assert the A20M# pin on the CPU, only if not booting from TSOP.
       A20MLEVEL <= TSOPBOOT;
-      --Reset LED state.
-      REG_00EE_WRITE(2 DOWNTO 0) <= "000";
       SDP_ID_EN <= '0';
       SDP_WR_EN <= '0';
       SDP_WR_ERASE <= '0';
@@ -318,15 +308,23 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
 
       --ADDRESS GATHERING
       WHEN ADDRESS =>
-         IF COUNT = 6 THEN
+         IF COUNT = 7 THEN
+            -- Set recovery bank on power-up if switch is activated.
+            IF SWITCH_RECOVER_LATCH = '0' THEN
+               SWITCH_RECOVER_LATCH <= '1';
+               IF SWITCH_RECOVER = '0' THEN
+                  REG_00EF_WRITE(3 DOWNTO 0) <= x"A";
+               END IF;
+            END IF;
+         ELSIF COUNT = 6 THEN
             QPI_EN_OUT <= '0';
             IF SDP_WR_BUSY = '1' THEN
                QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_RSR1;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
-               IF SDP_WR_ERASE = '1' THEN --AND REG_00EF_WRITE(3 DOWNTO 0) = x"B" THEN
+               IF SDP_WR_ERASE = '1' AND REG_00EF_WRITE(3 DOWNTO 0) = x"B" THEN
                   QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_ERASE_4K;
---               ELSIF SDP_WR_ERASE = '1' THEN
---                  QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_ERASE_64K;
+               ELSIF SDP_WR_ERASE = '1' THEN
+                  QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_ERASE_64K;
                ELSE
                   QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_WRITE;
                END IF;
@@ -335,78 +333,45 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             END IF;
          ELSIF COUNT = 5 THEN
             QPI_EN_OUT <= NOT SDP_ID_EN;
-            QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
-            LPC_ADDRESS(23 DOWNTO 20) <= LPC_LAD;
-         ELSIF COUNT = 4 THEN
-            QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
-            LPC_ADDRESS(19 DOWNTO 16) <= LPC_LAD;
-            --BANK CONTROL
-            -- Set recovery bank on power-up if switch is activated.
---            IF SWITCH_RECOVER_LATCH = '0' AND D0LEVEL = '0' THEN
---               SWITCH_RECOVER_LATCH <= '1';
---               IF SWITCH_RECOVER = '0' THEN
---                  REG_00EF_WRITE(3 DOWNTO 0) <= x"A"; --"1010"
---               END IF;
---            END IF;
---            CASE REG_00EF_WRITE(3 DOWNTO 0) IS
---            WHEN x"1" => --"0001" = 256KiB bank @ offset 0x180000 = address 0xF80000-0xFBFFFF
---               QPI_BUFFER(7 DOWNTO 5) <= "111";
---               QPI_BUFFER(4 DOWNTO 2) <= "110";
---               LPC_ADDRESS(23 DOWNTO 21) <= "111";
---               LPC_ADDRESS(20 DOWNTO 18) <= "110";
---            WHEN x"2" => --"0010" = 512KiB bank @ offset 0x100000 = address 0xF00000-0xF7FFFF
---               QPI_BUFFER(7 DOWNTO 5) <= "111";
---               QPI_BUFFER(4 DOWNTO 3) <= "10";
---               LPC_ADDRESS(23 DOWNTO 21) <= "111";
---               LPC_ADDRESS(20 DOWNTO 19) <= "10";
---            WHEN x"3" => --"0011" = 256KiB bank @ offset 0x000000 = address 0xE00000-0xE3FFFF
---               QPI_BUFFER(7 DOWNTO 5) <= "111";
---               QPI_BUFFER(4 DOWNTO 2) <= "000";
---               LPC_ADDRESS(23 DOWNTO 21) <= "111";
---               LPC_ADDRESS(20 DOWNTO 18) <= "000";
---            WHEN x"4" => --"0100" = 256KiB bank @ offset 0x040000 = address 0xE40000-0xE7FFFF
---               QPI_BUFFER(7 DOWNTO 5) <= "111";
---               QPI_BUFFER(4 DOWNTO 2) <= "001";
---               LPC_ADDRESS(23 DOWNTO 21) <= "111";
---               LPC_ADDRESS(20 DOWNTO 18) <= "001";
---            WHEN x"5" => --"0101" = 256KiB bank @ offset 0x080000 = address 0xE80000-0xEBFFFF
---               QPI_BUFFER(7 DOWNTO 5) <= "111";
---               QPI_BUFFER(4 DOWNTO 2) <= "010";
---               LPC_ADDRESS(23 DOWNTO 21) <= "111";
---               LPC_ADDRESS(20 DOWNTO 18) <= "010";
---            WHEN x"6" => --"0110" = 256KiB bank @ offset 0x0C0000 = address 0xEC0000-0xEFFFFF
---               QPI_BUFFER(7 DOWNTO 5) <= "111";
---               QPI_BUFFER(4 DOWNTO 2) <= "011";
---               LPC_ADDRESS(23 DOWNTO 21) <= "111";
---               LPC_ADDRESS(20 DOWNTO 18) <= "011";
---            WHEN x"7" => --"0111" = 512KiB bank @ offset 0x000000 = address 0xE00000-0xE7FFFF
---               QPI_BUFFER(7 DOWNTO 5) <= "111";
---               QPI_BUFFER(4 DOWNTO 3) <= "00";
---               LPC_ADDRESS(23 DOWNTO 21) <= "111";
---               LPC_ADDRESS(20 DOWNTO 19) <= "00";
---            WHEN x"8" => --"1000" = 512KiB bank @ offset 0x080000 = address 0xE80000-0xEFFFFF
---               QPI_BUFFER(7 DOWNTO 5) <= "111";
---               QPI_BUFFER(4 DOWNTO 3) <= "01";
---               LPC_ADDRESS(23 DOWNTO 21) <= "111";
---               LPC_ADDRESS(20 DOWNTO 19) <= "01";
---            WHEN x"9" => --"1001" = 1MiB bank @ offset 0x000000 = address 0xE00000-0xEFFFFF
---               QPI_BUFFER(7 DOWNTO 5) <= "111";
---               QPI_BUFFER(4) <= '0';
---               LPC_ADDRESS(23 DOWNTO 21) <= "111";
---               LPC_ADDRESS(20) <= '0';
---            WHEN x"A" => --"1010" = 256KiB bank @ offset 0x1C0000 = address 0xFC0000-0xFFFFFF
---               QPI_BUFFER(7 DOWNTO 5) <= "111";
---               QPI_BUFFER(4 DOWNTO 2) <= "111";
---               LPC_ADDRESS(23 DOWNTO 21) <= "111";
---               LPC_ADDRESS(20 DOWNTO 18) <= "111";
---            WHEN OTHERS => --x"B"/"1011" = 16MiB
+            --BANK SELECTION
+            IF REG_00EF_WRITE(3 DOWNTO 0) = x"1" OR
+               REG_00EF_WRITE(3 DOWNTO 0) = x"2" OR
+               REG_00EF_WRITE(3 DOWNTO 0) = x"A" THEN
+               QPI_BUFFER(3 DOWNTO 0) <= x"F";
+            ELSIF REG_00EF_WRITE(3 DOWNTO 0) = x"B" OR
+                  REG_00EF_WRITE(3 DOWNTO 2) = "11" THEN
                -- Do no bank selection (aka. address masking) and map all of flash memory.
                IF A20MLEVEL = '0' THEN
                   -- Wrap-around top 1MiB of flash memory until the A20M# pin on the CPU is deasserted.
-                  QPI_BUFFER(7 DOWNTO 4) <= x"F";
-                  LPC_ADDRESS(23 DOWNTO 20) <= x"F";
+                  QPI_BUFFER(3 DOWNTO 0) <= x"F";
+               ELSE
+                  QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
                END IF;
---            END CASE;
+            ELSE
+               QPI_BUFFER(3 DOWNTO 0) <= x"E";
+            END IF;
+            LPC_ADDRESS(23 DOWNTO 20) <= LPC_LAD;
+         ELSIF COUNT = 4 THEN
+            --BANK SELECTION
+            IF REG_00EF_WRITE(3 DOWNTO 0) = x"1" OR
+               REG_00EF_WRITE(3 DOWNTO 0) = x"5" THEN
+               QPI_BUFFER(3 DOWNTO 0) <= "10" & LPC_LAD(1 DOWNTO 0);
+            ELSIF REG_00EF_WRITE(3 DOWNTO 0) = x"2" OR
+                  REG_00EF_WRITE(3 DOWNTO 0) = x"7" THEN
+               QPI_BUFFER(3 DOWNTO 0) <= '0' & LPC_LAD(2 DOWNTO 0);
+            ELSIF REG_00EF_WRITE(3 DOWNTO 0) = x"3" THEN
+               QPI_BUFFER(3 DOWNTO 0) <= "00" & LPC_LAD(1 DOWNTO 0);
+            ELSIF REG_00EF_WRITE(3 DOWNTO 0) = x"4" THEN
+               QPI_BUFFER(3 DOWNTO 0) <= "01" & LPC_LAD(1 DOWNTO 0);
+            ELSIF REG_00EF_WRITE(3 DOWNTO 0) = x"6" OR
+                  REG_00EF_WRITE(3 DOWNTO 0) = x"A" THEN
+               QPI_BUFFER(3 DOWNTO 0) <= "11" & LPC_LAD(1 DOWNTO 0);
+            ELSIF REG_00EF_WRITE(3 DOWNTO 0) = x"8" THEN
+               QPI_BUFFER(3 DOWNTO 0) <= '1' & LPC_LAD(2 DOWNTO 0);
+            ELSE
+               QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
+            END IF;
+            LPC_ADDRESS(19 DOWNTO 16) <= LPC_LAD;
          ELSIF COUNT = 3 THEN
             QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
             LPC_ADDRESS(15 DOWNTO 12) <= LPC_LAD;
@@ -490,11 +455,10 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             ELSIF CYCLE_TYPE = IO_WRITE THEN
                IF LPC_ADDRESS(15 DOWNTO 0) = XENIUM_00EF THEN
                   REG_00EF_WRITE(7 DOWNTO 4) <= LPC_BUFFER(7 DOWNTO 4);
---                  IF LPC_BUFFER(3 DOWNTO 0) = x"0" THEN
+                  IF LPC_BUFFER(3 DOWNTO 0) = x"0" THEN
                      -- Bank 0 will disable state machine and release D0 & A20M# to boot from TSOP after reset.
---                     TSOPBOOT <= '1';
---                  ELS
-                  IF LPC_BUFFER(3 DOWNTO 2) = "11" THEN
+                     TSOPBOOT <= '1';
+                  ELSIF LPC_BUFFER(3 DOWNTO 2) = "11" THEN
                      QPI_CHIP <= LPC_BUFFER(1 DOWNTO 0);
                   ELSE
                      REG_00EF_WRITE(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
