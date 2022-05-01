@@ -32,16 +32,16 @@
 --REGISTER 0x00EF Bank Commands:
 --BANK # NAME                 A20|A19|A18 OFFSET   SIZE   ADDRESS           NOTE
 --     0 (TSOP)                X |X |X    N/A      N/A    N/A               This prevents the CPLD from driving any pins for TSOP boot.
---     1 XeniumOS (loader)     1 |1 |0    0x180000 256KiB 0xF80000-0xFBFFFF This is the default boot bank & contains XeniumOS's Cromwell bootloader.
---     2 XeniumOS              1 |0 |X    0x100000 512KiB 0xF00000-0xF7FFFF Contains XeniumOS.
---     3 BANK1 (USER BIOS)     0 |0 |0    0x000000 256KiB 0xE00000-0xE3FFFF
---     4 BANK2 (USER BIOS)     0 |0 |1    0x040000 256KiB 0xE40000-0xE7FFFF
---     5 BANK3 (USER BIOS)     0 |1 |0    0x080000 256KiB 0xE80000-0xEBFFFF
---     6 BANK4 (USER BIOS)     0 |1 |1    0x0C0000 256KiB 0xEC0000-0xEFFFFF
---     7 BANK1 (USER BIOS)     0 |0 |X    0x000000 512KiB 0xE00000-0xE7FFFF
---     8 BANK2 (USER BIOS)     0 |1 |X    0x080000 512KiB 0xE80000-0xEFFFFF
---     9 BANK1 (USER BIOS)     0 |X |X    0x000000 1MiB   0xE00000-0xEFFFFF
---    10 RECOVERY              1 |1 |1    0x1C0000 256KiB 0xFC0000-0xFFFFFF See NOTE 1.
+--     1 XeniumOS (loader)     1 |1 |0    0x180000 256KiB 0x180000-0x1BFFFF This is the default boot bank & contains XeniumOS's Cromwell bootloader.
+--     2 XeniumOS              1 |0 |X    0x100000 512KiB 0x100000-0x17FFFF Contains XeniumOS.
+--     3 BANK1 (USER BIOS)     0 |0 |0    0x000000 256KiB 0x000000-0x03FFFF
+--     4 BANK2 (USER BIOS)     0 |0 |1    0x040000 256KiB 0x040000-0x07FFFF
+--     5 BANK3 (USER BIOS)     0 |1 |0    0x080000 256KiB 0x080000-0x0BFFFF
+--     6 BANK4 (USER BIOS)     0 |1 |1    0x0C0000 256KiB 0x0C0000-0x0FFFFF
+--     7 BANK1 (USER BIOS)     0 |0 |X    0x000000 512KiB 0x000000-0x07FFFF
+--     8 BANK2 (USER BIOS)     0 |1 |X    0x080000 512KiB 0x080000-0x0FFFFF
+--     9 BANK1 (USER BIOS)     0 |X |X    0x000000 1MiB   0x000000-0x0FFFFF
+--    10 RECOVERY              1 |1 |1    0x1C0000 256KiB 0x1C0000-0x1FFFFF See NOTE 1.
 --    11 (No address masking)  X |X |X    N/A      16MiB  0x000000-0xFFFFFF This maps all of flash memory into the LPC MMIO window (0xFF000000-0xFFFFFFFF).
 --    12 (U2 QPI Chip Select)  X |X |X    N/A      N/A    N/A               This is the default selected chip.
 --    13 (U3 QPI Chip Select)  X |X |X    N/A      N/A    N/A
@@ -344,7 +344,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             IF REG_00EF_WRITE(3 DOWNTO 0) = x"1" OR
                REG_00EF_WRITE(3 DOWNTO 0) = x"2" OR
                REG_00EF_WRITE(3 DOWNTO 0) = x"A" THEN
-               QPI_BUFFER(3 DOWNTO 0) <= x"F";
+               QPI_BUFFER(3 DOWNTO 0) <= x"1";
             ELSIF REG_00EF_WRITE(3 DOWNTO 0) = x"B" OR
                   REG_00EF_WRITE(3 DOWNTO 2) = "11" THEN
                -- Do no bank selection (aka. address masking) and map all of flash memory.
@@ -355,7 +355,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                   QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
                END IF;
             ELSE
-               QPI_BUFFER(3 DOWNTO 0) <= x"E";
+               QPI_BUFFER(3 DOWNTO 0) <= x"0";
             END IF;
             LPC_ADDRESS(23 DOWNTO 20) <= LPC_LAD;
          ELSIF COUNT = 4 THEN
