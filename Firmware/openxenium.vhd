@@ -63,7 +63,7 @@
 --X,SCK,CS,MOSI,BANK[3:0]
 --
 --**0x00EF READ:**
---RECOVERY (Active Low),X,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
+--RECOVERY (Active Low),BUSY,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
 --
 --**0x00EE WRITE:**
 --X,X,X,X,X,B,G,R (DEFAULT LED ON POWER UP IS RED)
@@ -140,7 +140,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    CONSTANT REG_00EE_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"AA"; -- OpenXenium QPI (OpenXenium & Genuine Xenium return 0x55)
    SIGNAL REG_00EE_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := "00000001"; -- X,X,X,X,X,B,G,R (Red is default LED colour on power-up)
    SIGNAL REG_00EF_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := "00000001"; -- X,SCK,CS,MOSI,BANK[3:0]
-   SIGNAL REG_00EF_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := "01010101"; -- RECOVERY (Active Low),X,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
+   SIGNAL REG_00EF_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := "01010101"; -- RECOVERY (Active Low),BUSY,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
    SIGNAL SWITCH_RECOVER_LATCH : STD_LOGIC := '0';
 
    --QPI READ/WRITE REGISTERS FOR FLASH MEMORY
@@ -257,7 +257,7 @@ BEGIN
    MOSFET_A20M <= '0' WHEN TSOPBOOT = '1' ELSE
                   NOT A20MLEVEL;
 
-   REG_00EF_READ <= SWITCH_RECOVER & '0' & HEADER_MISO2 & HEADER_MISO1 & REG_00EF_WRITE(3 DOWNTO 0);
+   REG_00EF_READ <= SWITCH_RECOVER & SDP_WR_BUSY & HEADER_MISO2 & HEADER_MISO1 & REG_00EF_WRITE(3 DOWNTO 0);
 
 PROCESS (LPC_CLK, LPC_RST) BEGIN
    IF LPC_RST = '0' THEN
@@ -337,7 +337,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_READ;
             END IF;
          ELSIF COUNT = 5 THEN
-            IF SDP_ID_EN = '0' THEN
+            IF SDP_ID_EN = '0' OR SDP_WR_BUSY = '1' THEN
                QPI_EN <= QPI_EN_OUT;
             END IF;
             --BANK SELECTION
@@ -423,10 +423,8 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
          LPC_CURRENT_STATE <= WRITE_DATA1;
       WHEN WRITE_DATA1 =>
          LPC_BUFFER(7 DOWNTO 4) <= LPC_LAD;
-         IF CYCLE_TYPE = MEM_WRITE THEN
-            QPI_BUFFER(7 DOWNTO 4) <= LPC_LAD;
-            QPI_BUFFER(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
-         END IF;
+         QPI_BUFFER(7 DOWNTO 4) <= LPC_LAD;
+         QPI_BUFFER(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
          LPC_CURRENT_STATE <= TAR1;
 
       --MEMORY OR IO READS
@@ -465,7 +463,10 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                      -- Bank 0 will disable state machine and release D0 & A20M# to boot from TSOP after reset.
                      TSOPBOOT <= '1';
                   ELSIF LPC_BUFFER(3 DOWNTO 2) = "11" THEN
-                     QPI_CHIP <= LPC_BUFFER(1 DOWNTO 0);
+                     IF LPC_BUFFER(1 DOWNTO 0) /= QPI_CHIP THEN
+                        QPI_CHIP <= LPC_BUFFER(1 DOWNTO 0);
+                        SDP_WR_BUSY <= '1';
+                     END IF;
                   ELSE
                      REG_00EF_WRITE(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
                   END IF;
@@ -474,9 +475,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                END IF;
                LPC_CURRENT_STATE <= SYNC_COMPLETE;
             ELSIF SDP_WR_BUSY = '1' THEN
-               IF SDP_WR_BUSY_BIT = '0' THEN
-                  SDP_WR_BUSY <= '0';
-               END IF;
+               SDP_WR_BUSY <= SDP_WR_BUSY_BIT;
                IF CYCLE_TYPE = MEM_READ THEN
                   LPC_BUFFER <= "0000000" & SDP_WR_BUSY_TOGGLE;
                   SDP_WR_BUSY_TOGGLE <= NOT SDP_WR_BUSY_TOGGLE;
@@ -494,8 +493,6 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
                QPI_EN <= QPI_EN_OFF;
                IF SDP_WR_EN = '1' THEN
-                  SDP_WR_EN <= '0';
-                  SDP_WR_ERASE <= '0';
                   SDP_WR_BUSY <= '1';
                ELSIF SDP_ID_EN = '1' THEN
                   IF LPC_BUFFER = SDP_ID_EXIT_DATA THEN --x"F0"
@@ -533,26 +530,24 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                END IF;
                LPC_CURRENT_STATE <= SYNC_COMPLETE;
             END IF;
+         ELSIF COUNT = 3 AND CYCLE_TYPE /= MEM_READ THEN
+            LPC_CURRENT_STATE <= SYNC_COMPLETE;
          ELSIF COUNT = 3 THEN
-            IF CYCLE_TYPE = MEM_READ THEN
-               QPI_EN <= QPI_EN_IN;
-            END IF;
+            QPI_EN <= QPI_EN_IN;
          ELSIF COUNT = 2 THEN
-            IF CYCLE_TYPE = MEM_READ THEN
-               LPC_BUFFER(7 DOWNTO 4) <= QPI_IO;
-            END IF;
+            LPC_BUFFER(7 DOWNTO 4) <= QPI_IO;
          ELSIF COUNT = 1 THEN
-            IF CYCLE_TYPE = MEM_READ THEN
-               LPC_BUFFER(3 DOWNTO 0) <= QPI_IO;
-            END IF;
+            LPC_BUFFER(3 DOWNTO 0) <= QPI_IO;
          ELSIF COUNT = 0 THEN
-            IF CYCLE_TYPE = MEM_READ THEN
-               QPI_EN <= QPI_EN_OFF;
-            END IF;
+            QPI_EN <= QPI_EN_OFF;
             LPC_CURRENT_STATE <= SYNC_COMPLETE;
          END IF;
       WHEN SYNC_COMPLETE =>
-         IF CYCLE_TYPE = MEM_READ OR CYCLE_TYPE = IO_READ THEN
+         IF SDP_WR_BUSY = '1' THEN
+            SDP_WR_EN <= '0';
+            SDP_WR_ERASE <= '0';
+         END IF;
+         IF LPC_CYCLE_WRITE = '0' THEN
             LPC_CURRENT_STATE <= READ_DATA0;
          ELSE
             LPC_CURRENT_STATE <= TAR_EXIT;
