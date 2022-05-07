@@ -299,13 +299,9 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             CYCLE_TYPE <= MEM_WRITE;
             COUNT <= 7;
             LPC_CURRENT_STATE <= ADDRESS;
-            IF SDP_ID_EN = '0' AND SDP_WR_BUSY = '0' THEN
-               QPI_EN <= QPI_EN_OUT;
-            END IF;
             IF SDP_WR_EN = '1' THEN
                QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_WR_EN;
-            ELSE
-               QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_WR_DI;
+               QPI_EN <= QPI_EN_OUT;
             END IF;
          ELSE
             LPC_CURRENT_STATE <= WAIT_START; -- Unsupported, reset state machine.
@@ -314,6 +310,9 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
       --ADDRESS GATHERING
       WHEN ADDRESS =>
          IF COUNT = 7 THEN
+            IF SDP_WR_EN = '1' THEN
+               QPI_EN <= QPI_EN_OFF;
+            END IF;
             -- Set recovery bank on power-up if switch is activated.
             IF SWITCH_RECOVER_LATCH = '0' THEN
                SWITCH_RECOVER_LATCH <= '1';
@@ -322,7 +321,6 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                END IF;
             END IF;
          ELSIF COUNT = 6 THEN
-            QPI_EN <= QPI_EN_OFF;
             IF SDP_WR_BUSY = '1' THEN
                QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_RSR1;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
@@ -380,25 +378,31 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             END IF;
             LPC_ADDRESS(19 DOWNTO 16) <= LPC_LAD;
          ELSIF COUNT = 3 THEN
-            QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
+            IF LPC_CYCLE_MEM = '1' THEN
+               IF SDP_WR_BUSY = '1' THEN
+                  QPI_EN <= QPI_EN_IN;
+               END IF;
+               QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
+            END IF;
             LPC_ADDRESS(15 DOWNTO 12) <= LPC_LAD;
-            IF SDP_WR_BUSY = '1' AND LPC_CYCLE_MEM = '1' THEN
-               QPI_EN <= QPI_EN_IN;
-            END IF;
          ELSIF COUNT = 2 THEN
-            QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
+            IF LPC_CYCLE_MEM = '1' THEN
+               IF SDP_WR_BUSY = '1' THEN
+                  SDP_WR_BUSY_BIT <= QPI_IO(0);
+                  QPI_EN <= QPI_EN_OFF;
+               END IF;
+               QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
+            END IF;
             LPC_ADDRESS(11 DOWNTO 8) <= LPC_LAD;
-            IF SDP_WR_BUSY = '1' AND LPC_CYCLE_MEM = '1' THEN
-               SDP_WR_BUSY_BIT <= QPI_IO(0);
-            END IF;
          ELSIF COUNT = 1 THEN
-            QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
-            LPC_ADDRESS(7 DOWNTO 4) <= LPC_LAD;
-            IF SDP_WR_BUSY = '1' AND LPC_CYCLE_MEM = '1' THEN
-               QPI_EN <= QPI_EN_OFF;
+            IF LPC_CYCLE_MEM = '1' THEN
+               QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
             END IF;
+            LPC_ADDRESS(7 DOWNTO 4) <= LPC_LAD;
          ELSIF COUNT = 0 THEN
-            QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
+            IF LPC_CYCLE_MEM = '1' THEN
+               QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
+            END IF;
             LPC_ADDRESS(3 DOWNTO 0) <= LPC_LAD;
             IF CYCLE_TYPE = MEM_READ THEN
                LPC_CURRENT_STATE <= TAR1;
@@ -423,8 +427,14 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
          LPC_CURRENT_STATE <= WRITE_DATA1;
       WHEN WRITE_DATA1 =>
          LPC_BUFFER(7 DOWNTO 4) <= LPC_LAD;
-         QPI_BUFFER(7 DOWNTO 4) <= LPC_LAD;
-         QPI_BUFFER(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
+         IF CYCLE_TYPE = MEM_WRITE THEN
+            IF SDP_WR_ERASE = '1' THEN
+               QPI_EN <= QPI_EN_OFF;
+            ELSE
+               QPI_BUFFER(7 DOWNTO 4) <= LPC_LAD;
+               QPI_BUFFER(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
+            END IF;
+         END IF;
          LPC_CURRENT_STATE <= TAR1;
 
       --MEMORY OR IO READS
@@ -435,18 +445,18 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
 
       --TURN BUS AROUND (HOST TO PERIPHERAL)
       WHEN TAR1 =>
-         IF CYCLE_TYPE = MEM_WRITE AND SDP_WR_ERASE = '1' THEN
-            QPI_EN <= QPI_EN_OFF;
-         END IF;
          LPC_CURRENT_STATE <= TAR2;
       WHEN TAR2 =>
+         IF CYCLE_TYPE = MEM_WRITE THEN
+            QPI_EN <= QPI_EN_OFF;
+         END IF;
          LPC_CURRENT_STATE <= SYNCING;
-         COUNT <= 5;
+         COUNT <= 4;
 
       --SYNCING STAGE
       WHEN SYNCING =>
          COUNT <= COUNT - 1;
-         IF COUNT = 4 THEN
+         IF COUNT = 3 THEN
             IF CYCLE_TYPE = IO_READ THEN
                IF LPC_ADDRESS(15 DOWNTO 0) = XENIUM_00EF THEN
                   LPC_BUFFER <= REG_00EF_READ;
@@ -491,7 +501,6 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                   LPC_CURRENT_STATE <= SYNC_COMPLETE;
                END IF;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
-               QPI_EN <= QPI_EN_OFF;
                IF SDP_WR_EN = '1' THEN
                   SDP_WR_BUSY <= '1';
                ELSIF SDP_ID_EN = '1' THEN
@@ -530,15 +539,14 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                END IF;
                LPC_CURRENT_STATE <= SYNC_COMPLETE;
             END IF;
-         ELSIF COUNT = 3 AND CYCLE_TYPE /= MEM_READ THEN
+         ELSIF COUNT = 2 AND CYCLE_TYPE /= MEM_READ THEN
             LPC_CURRENT_STATE <= SYNC_COMPLETE;
-         ELSIF COUNT = 3 THEN
-            QPI_EN <= QPI_EN_IN;
          ELSIF COUNT = 2 THEN
-            LPC_BUFFER(7 DOWNTO 4) <= QPI_IO;
+            QPI_EN <= QPI_EN_IN;
          ELSIF COUNT = 1 THEN
-            LPC_BUFFER(3 DOWNTO 0) <= QPI_IO;
+            LPC_BUFFER(7 DOWNTO 4) <= QPI_IO;
          ELSIF COUNT = 0 THEN
+            LPC_BUFFER(3 DOWNTO 0) <= QPI_IO;
             QPI_EN <= QPI_EN_OFF;
             LPC_CURRENT_STATE <= SYNC_COMPLETE;
          END IF;
