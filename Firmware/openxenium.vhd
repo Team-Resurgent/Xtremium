@@ -1,7 +1,7 @@
 -- Design Name: openxenium
 -- Module Name: openxenium - Behavioral
 -- Project Name: OpenXenium QPI. Open Source Xenius modchip CPLD replacement project
--- Target Devices: XC95144XL-TQ100
+-- Target Devices: XC3S{50,200}A-VQ100
 --
 -- Revision 0.01 (2019/09/20) - File Created - Ryan Wendland
 -- Revision 2022/04/04 - Use SOIC8 16MiB Flash Chips in QPI Mode - Michael Saga
@@ -91,6 +91,7 @@ ENTITY openxenium IS
 
       QPI_IO : INOUT STD_LOGIC_VECTOR (3 DOWNTO 0);
       QPI_CS : OUT STD_LOGIC_VECTOR (2 DOWNTO 0);
+      QPI_CLK : OUT STD_LOGIC;
 
       LPC_LAD : INOUT STD_LOGIC_VECTOR (3 DOWNTO 0);
       LPC_CLK : IN STD_LOGIC;
@@ -220,6 +221,7 @@ BEGIN
              "011" WHEN QPI_CHIP = "10" ELSE -- Chip U4 (when BANK[3:0] = x"E")
              "101" WHEN QPI_CHIP = "01" ELSE -- Chip U3 (when BANK[3:0] = x"D")
              "110"; -- Chip U2 (when BANK[3:0] = x"C" OR x"F")
+   QPI_CLK <= LPC_CLK; --FIXME
 
    --LAD lines can be either input or output
    --The output values depend on variable states of the LPC transaction
