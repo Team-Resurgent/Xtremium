@@ -146,7 +146,8 @@ ARCHITECTURE Behavioral OF openxenium IS
 
    --QPI READ/WRITE REGISTERS FOR FLASH MEMORY
    --QPI Instructions (W25Q128JV-DTR Rev C section 6.1.4)
-   CONSTANT QPI_INST_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"EB"; -- Fast Read Quad I/O in QPI Mode (W25Q128JV-DTR Rev C section 8.2.14)
+   CONSTANT QPI_INST_INIT : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"38"; -- Enter QPI Mode (W25Q128JV-DTR Rev C section 8.2.38)
+   CONSTANT QPI_INST_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"0B"; -- Fast Read in QPI Mode (W25Q128JV-DTR Rev C section 8.2.7)
    CONSTANT QPI_INST_RSR1 : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"05"; -- Read Status Register-1 (W25Q128JV-DTR Rev C section 8.2.4)
    --Write Protect Features (W25Q128JV-DTR Rev C section 6.2.1 paragraph 2)
    CONSTANT QPI_INST_WR_EN : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"06"; -- Write Enable (W25Q128JV-DTR Rev C section 8.2.1)
@@ -160,9 +161,11 @@ ARCHITECTURE Behavioral OF openxenium IS
    TYPE QPI_EN_TYPE IS (
    QPI_EN_OFF,
    QPI_EN_OUT,
-   QPI_EN_IN
+   QPI_EN_IN,
+   QPI_EN_INIT
    );
    SIGNAL QPI_EN : QPI_EN_TYPE := QPI_EN_OFF;
+   SIGNAL QPI_EN_INIT_LATCH : STD_LOGIC := '0';
 
    --SOFTWARE DATA PROTECTION (SDP) COMMAND SEQUENCE
    CONSTANT SDP_TICK_ADDR : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"AAAA";
@@ -216,12 +219,14 @@ BEGIN
    MOSFET_LED_B <= REG_00EE_WRITE(2);
 
    QPI_IO <= QPI_BUFFER(11 DOWNTO 8) WHEN QPI_EN = QPI_EN_OUT ELSE
+             "ZZZ" & QPI_BUFFER(11) WHEN QPI_EN = QPI_EN_INIT ELSE
              "ZZZZ";
    QPI_CS <= "111" WHEN QPI_EN = QPI_EN_OFF ELSE
+             "000" WHEN QPI_EN = QPI_EN_INIT ELSE
              "011" WHEN QPI_CHIP = "10" ELSE -- Chip U4 (when BANK[3:0] = x"E")
              "101" WHEN QPI_CHIP = "01" ELSE -- Chip U3 (when BANK[3:0] = x"D")
              "110"; -- Chip U2 (when BANK[3:0] = x"C" OR x"F")
-   QPI_CLK <= LPC_CLK; --FIXME
+   QPI_CLK <= '0' WHEN QPI_EN = QPI_EN_OFF ELSE NOT LPC_CLK; -- SPI Mode 0
 
    --LAD lines can be either input or output
    --The output values depend on variable states of the LPC transaction
@@ -262,7 +267,7 @@ BEGIN
    REG_00EF_READ <= SWITCH_RECOVER & SDP_WR_BUSY & HEADER_MISO2 & HEADER_MISO1 & REG_00EF_WRITE(3 DOWNTO 0);
 
 PROCESS (LPC_CLK, LPC_RST) BEGIN
-   IF LPC_RST = '0' THEN
+   IF LPC_RST = '0' AND QPI_EN_INIT_LATCH = '1' THEN
       --LPC_RST goes low during boot up or hard reset.
       --Hold D0 low to boot from the LPC bus, only if not booting from TSOP.
       D0LEVEL <= TSOPBOOT;
@@ -277,11 +282,28 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
       CYCLE_TYPE <= IO_READ;
       LPC_CURRENT_STATE <= WAIT_START;
    ELSIF rising_edge(LPC_CLK) THEN
-      QPI_BUFFER <= QPI_BUFFER(7 DOWNTO 0) & "0000";
+      IF QPI_EN_INIT_LATCH = '0' THEN
+         QPI_BUFFER <= QPI_BUFFER(10 DOWNTO 0) & '0';
+      ELSE
+         QPI_BUFFER <= QPI_BUFFER(7 DOWNTO 0) & "0000";
+      END IF;
       CASE LPC_CURRENT_STATE IS
       WHEN WAIT_START =>
          CYCLE_TYPE <= IO_READ;
-         IF TSOPBOOT = '0' AND LPC_LAD = "0000" THEN
+         IF QPI_EN_INIT_LATCH = '0' THEN
+            IF QPI_EN = QPI_EN_OFF THEN
+               QPI_EN <= QPI_EN_INIT;
+               QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_INIT;
+               COUNT <= 7;
+            ELSE
+               IF COUNT = 0 THEN
+                  QPI_EN <= QPI_EN_OFF;
+                  QPI_EN_INIT_LATCH <= '1';
+               ELSE
+                  COUNT <= COUNT - 1;
+               END IF;
+            END IF;
+         ELSIF TSOPBOOT = '0' AND LPC_LAD = "0000" THEN
             LPC_CURRENT_STATE <= CYCTYPE_DIR;
          END IF;
       WHEN CYCTYPE_DIR =>
@@ -312,9 +334,6 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
       --ADDRESS GATHERING
       WHEN ADDRESS =>
          IF COUNT = 7 THEN
-            IF SDP_WR_EN = '1' THEN
-               QPI_EN <= QPI_EN_OFF;
-            END IF;
             -- Set recovery bank on power-up if switch is activated.
             IF SWITCH_RECOVER_LATCH = '0' THEN
                SWITCH_RECOVER_LATCH <= '1';
@@ -323,6 +342,9 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                END IF;
             END IF;
          ELSIF COUNT = 6 THEN
+            IF SDP_WR_EN = '1' THEN
+               QPI_EN <= QPI_EN_OFF;
+            END IF;
             IF SDP_WR_BUSY = '1' THEN
                QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_RSR1;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
