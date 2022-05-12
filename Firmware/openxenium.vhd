@@ -24,7 +24,7 @@
 ----------------------------------------------------------------------------------
 --
 --
---**BANK SELECTION**
+--**XENIUM BANK SELECTION**
 --Bank selection is controlled by the lower nibble of IO address 0x00EF.
 --A20,A19,A18 are masked address lines to the flash memory.
 --'X' means the address line is not masked by the CPLD for banking purposes.
@@ -34,13 +34,13 @@
 --     0 (TSOP)                X |X |X    N/A      N/A    N/A               This prevents the CPLD from driving any pins for TSOP boot.
 --     1 XeniumOS (loader)     1 |1 |0    0x180000 256KiB 0x180000-0x1BFFFF This is the default boot bank & contains XeniumOS's Cromwell bootloader.
 --     2 XeniumOS              1 |0 |X    0x100000 512KiB 0x100000-0x17FFFF Contains XeniumOS.
---     3 BANK1 (USER BIOS)     0 |0 |0    0x000000 256KiB 0x000000-0x03FFFF
---     4 BANK2 (USER BIOS)     0 |0 |1    0x040000 256KiB 0x040000-0x07FFFF
---     5 BANK3 (USER BIOS)     0 |1 |0    0x080000 256KiB 0x080000-0x0BFFFF
---     6 BANK4 (USER BIOS)     0 |1 |1    0x0C0000 256KiB 0x0C0000-0x0FFFFF
---     7 BANK1 (USER BIOS)     0 |0 |X    0x000000 512KiB 0x000000-0x07FFFF
---     8 BANK2 (USER BIOS)     0 |1 |X    0x080000 512KiB 0x080000-0x0FFFFF
---     9 BANK1 (USER BIOS)     0 |X |X    0x000000 1MiB   0x000000-0x0FFFFF
+--     3 BANK1 (USER BIOS)     0 |0 |0    0x000000 256KiB 0x200000-0x23FFFF
+--     4 BANK2 (USER BIOS)     0 |0 |1    0x040000 256KiB 0x240000-0x27FFFF
+--     5 BANK3 (USER BIOS)     0 |1 |0    0x080000 256KiB 0x280000-0x2BFFFF
+--     6 BANK4 (USER BIOS)     0 |1 |1    0x0C0000 256KiB 0x2C0000-0x2FFFFF
+--     7 BANK1 (USER BIOS)     0 |0 |X    0x000000 512KiB 0x200000-0x27FFFF
+--     8 BANK2 (USER BIOS)     0 |1 |X    0x080000 512KiB 0x280000-0x2FFFFF
+--     9 BANK1 (USER BIOS)     0 |X |X    0x000000 1MiB   0x200000-0x2FFFFF
 --    10 RECOVERY              1 |1 |1    0x1C0000 256KiB 0x1C0000-0x1FFFFF See NOTE 1.
 --    11 (No address masking)  X |X |X    N/A      16MiB  0x000000-0xFFFFFF This maps all of flash memory into the LPC MMIO window (0xFF000000-0xFFFFFFFF).
 --    12 (U2 QPI Chip Select)  X |X |X    N/A      N/A    N/A               This is the default selected chip.
@@ -377,7 +377,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                   QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
                END IF;
             ELSE
-               QPI_BUFFER(3 DOWNTO 0) <= x"0";
+               QPI_BUFFER(3 DOWNTO 0) <= x"2";
             END IF;
             LPC_ADDRESS(23 DOWNTO 20) <= LPC_LAD;
          ELSIF COUNT = 4 THEN
