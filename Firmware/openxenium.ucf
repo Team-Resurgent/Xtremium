@@ -1,6 +1,8 @@
 # Created by Constraints Editor (xc9572xl-vq64-10) - 2019/09/20
 # Updated for QPI support (xc3s{50,200}a-vq100) - 2022/04/04
 
+# Applies to Spartan-3A and Spartan-6 devices.
+CONFIG VCCAUX=3.3;
 # Prohibit the automatic placement of dual purpose pins that are connected to VCC or GND for configuration.
 CONFIG PROHIBIT=P99; # HSWAP/PUDC_B
 CONFIG PROHIBIT=P25; # M0
