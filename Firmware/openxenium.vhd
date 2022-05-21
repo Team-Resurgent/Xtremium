@@ -483,7 +483,12 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
          IF COUNT = 3 THEN
             IF CYCLE_TYPE = IO_READ THEN
                IF LPC_ADDRESS(15 DOWNTO 0) = XENIUM_00EF THEN
-                  LPC_BUFFER <= REG_00EF_READ;
+                  IF REG_00EF_WRITE(3 DOWNTO 0) = x"B" THEN
+                     LPC_BUFFER(7 DOWNTO 4) <= REG_00EF_READ(7 DOWNTO 4);
+                     LPC_BUFFER(3 DOWNTO 0) <= "11" & QPI_CHIP;
+                  ELSE
+                     LPC_BUFFER <= REG_00EF_READ;
+                  END IF;
                ELSE
                   LPC_BUFFER <= REG_00EE_READ;
                   -- Deassert the A20M# pin on the CPU.
