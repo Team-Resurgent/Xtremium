@@ -170,7 +170,6 @@ ARCHITECTURE Behavioral OF openxenium IS
    );
    SIGNAL QPI_EN : QPI_EN_TYPE := QPI_EN_OFF;
    SIGNAL QPI_EN_INIT_LATCH : STD_LOGIC := '0';
-   SIGNAL QPI_CS_DELAY : STD_LOGIC := '0'; -- Chip select half clock cycle delay.
 
    --SOFTWARE DATA PROTECTION (SDP) COMMAND SEQUENCE
    CONSTANT SDP_TICK_ADDR : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"AAAA";
@@ -231,13 +230,12 @@ BEGIN
              "ZZZ" & QPI_BUFFER(11) WHEN QPI_EN = QPI_EN_INIT ELSE
              "ZZZZ";
    QPI_CS <= "000" WHEN QPI_EN = QPI_EN_INIT ELSE
-             "111" WHEN QPI_EN = QPI_EN_OFF AND ((QPI_CS_DELAY = '0' AND REG_00EC(0) = '0') OR REG_00EC(0) = '1') ELSE
+             "111" WHEN QPI_EN = QPI_EN_OFF ELSE
              "011" WHEN QPI_CHIP = "10" ELSE -- Chip U4 (when BANK[3:0] = x"E")
              "101" WHEN QPI_CHIP = "01" ELSE -- Chip U3 (when BANK[3:0] = x"D")
              "110"; -- Chip U2 (when BANK[3:0] = x"C" OR x"F")
    QPI_CLK <= REG_00EC(2) WHEN REG_00EC(0) = '1' ELSE
-              '0' WHEN QPI_EN = QPI_EN_OFF ELSE
-              NOT LPC_CLK; -- SPI Mode 0
+              '0' WHEN QPI_EN = QPI_EN_OFF ELSE NOT LPC_CLK; -- SPI Mode 0
 
    --LAD lines can be either input or output
    --The output values depend on variable states of the LPC transaction
@@ -276,13 +274,6 @@ BEGIN
 
    REG_00EF_READ <= SWITCH_RECOVER & SDP_WR_BUSY & HEADER_MISO2 & HEADER_MISO1 & REG_00EF_WRITE(3 DOWNTO 0);
 
-PROCESS (LPC_CLK, QPI_EN) BEGIN
-   IF QPI_EN /= QPI_EN_OFF THEN
-      QPI_CS_DELAY <= '1';
-   ELSIF falling_edge(LPC_CLK) THEN
-      QPI_CS_DELAY <= '0';
-   END IF;
-END PROCESS;
 PROCESS (LPC_CLK, LPC_RST) BEGIN
    IF LPC_RST = '0' AND QPI_EN_INIT_LATCH = '1' THEN
       --LPC_RST goes low during boot up or hard reset.
@@ -351,6 +342,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
 
       --ADDRESS GATHERING
       WHEN ADDRESS =>
+         COUNT <= COUNT - 1;
          IF COUNT = 7 THEN
             -- Set recovery bank on power-up if switch is activated.
             IF SWITCH_RECOVER_LATCH = '0' THEN
@@ -360,9 +352,12 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                END IF;
             END IF;
          ELSIF COUNT = 6 THEN
-            QPI_EN <= QPI_EN_OFF;
+            IF SDP_WR_EN = '1' THEN
+               QPI_EN <= QPI_EN_OFF;
+            END IF;
             IF SDP_WR_BUSY = '1' THEN
-               QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_RSR1;
+               QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_RSR1;
+               QPI_EN <= QPI_EN_OUT;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
                IF SDP_WR_ERASE = '1' AND REG_00EF_WRITE(3 DOWNTO 0) = x"B" THEN
                   QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_ERASE_4K;
@@ -375,7 +370,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_READ;
             END IF;
          ELSIF COUNT = 5 THEN
-            IF SDP_WR_BUSY = '1' OR SDP_WR_EN = '1' OR (SDP_ID_EN = '0' AND CYCLE_TYPE = MEM_READ) THEN
+            IF SDP_WR_EN = '1' OR SDP_WR_BUSY = '1' OR (SDP_ID_EN = '0' AND CYCLE_TYPE = MEM_READ) THEN
                QPI_EN <= QPI_EN_OUT;
             END IF;
             --BANK SELECTION
@@ -397,6 +392,9 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             END IF;
             LPC_ADDRESS(23 DOWNTO 20) <= LPC_LAD;
          ELSIF COUNT = 4 THEN
+            IF SDP_WR_BUSY = '1' THEN
+               QPI_EN <= QPI_EN_IN;
+            END IF;
             --BANK SELECTION
             IF REG_00EF_WRITE(3 DOWNTO 0) = x"1" OR
                REG_00EF_WRITE(3 DOWNTO 0) = x"5" THEN
@@ -420,7 +418,6 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
          ELSIF COUNT = 3 THEN
             IF LPC_CYCLE_MEM = '1' THEN
                IF SDP_WR_BUSY = '1' THEN
-                  QPI_EN <= QPI_EN_IN;
                   LPC_BUFFER(7 DOWNTO 4) <= QPI_IO;
                END IF;
                QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
@@ -460,7 +457,6 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                LPC_CURRENT_STATE <= WAIT_START; -- Unsupported, reset state machine.
             END IF;
          END IF;
-         COUNT <= COUNT - 1;
 
       --MEMORY OR IO WRITES
       WHEN WRITE_DATA0 =>
@@ -498,7 +494,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
       --SYNCING STAGE
       WHEN SYNCING =>
          COUNT <= COUNT - 1;
-         IF COUNT = 3 THEN
+         IF COUNT = 4 THEN
             IF CYCLE_TYPE = IO_READ THEN
                CASE LPC_ADDRESS(15 DOWNTO 0) IS
                WHEN XENIUM_00EC =>
@@ -580,9 +576,9 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                   LPC_CURRENT_STATE <= SYNC_COMPLETE;
                END IF;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
-               QPI_EN <= QPI_EN_OFF;
                IF SDP_WR_EN = '1' THEN
                   SDP_WR_BUSY <= '1';
+                  QPI_EN <= QPI_EN_OFF;
                ELSIF SDP_ID_EN = '1' THEN
                   IF LPC_BUFFER = SDP_ID_EXIT_DATA THEN --x"F0"
                      SDP_ID_EN <= '0';
@@ -619,7 +615,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                END IF;
                LPC_CURRENT_STATE <= SYNC_COMPLETE;
             END IF;
-         ELSIF COUNT = 2 AND CYCLE_TYPE /= MEM_READ THEN
+         ELSIF COUNT = 3 AND CYCLE_TYPE /= MEM_READ THEN
             LPC_CURRENT_STATE <= SYNC_COMPLETE;
          ELSIF COUNT = 2 THEN
             QPI_EN <= QPI_EN_IN;
