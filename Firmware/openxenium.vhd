@@ -169,6 +169,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    QPI_EN_INIT
    );
    SIGNAL QPI_EN : QPI_EN_TYPE := QPI_EN_OFF;
+   SIGNAL QPI_EN_INIT_AGAIN : STD_LOGIC := '0';
    SIGNAL QPI_EN_INIT_LATCH : STD_LOGIC := '0';
 
    --SOFTWARE DATA PROTECTION (SDP) COMMAND SEQUENCE
@@ -187,7 +188,6 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL SDP_WR_EN : STD_LOGIC := '0';
    SIGNAL SDP_WR_ERASE : STD_LOGIC := '0';
    SIGNAL SDP_WR_BUSY : STD_LOGIC := '0';
-   SIGNAL SDP_WR_BUSY_BIT : STD_LOGIC := '0';
    SIGNAL SDP_WR_BUSY_TOGGLE : STD_LOGIC := '0';
    SIGNAL SDP_COUNT : INTEGER RANGE 0 TO 4 := 0;
 
@@ -306,7 +306,12 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             ELSE
                IF COUNT = 0 THEN
                   QPI_EN <= QPI_EN_OFF;
-                  QPI_EN_INIT_LATCH <= '1';
+                  IF QPI_EN_INIT_AGAIN = '0' THEN
+                     QPI_EN_INIT_AGAIN <= '1';
+                  ELSE
+                     QPI_EN_INIT_AGAIN <= '0';
+                     QPI_EN_INIT_LATCH <= '1';
+                  END IF;
                ELSE
                   COUNT <= COUNT - 1;
                END IF;
@@ -426,7 +431,6 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
          ELSIF COUNT = 2 THEN
             IF LPC_CYCLE_MEM = '1' THEN
                IF SDP_WR_BUSY = '1' THEN
-                  SDP_WR_BUSY_BIT <= QPI_IO(0);
                   LPC_BUFFER(3 DOWNTO 0) <= QPI_IO;
                   QPI_EN <= QPI_EN_OFF;
                END IF;
@@ -560,7 +564,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                END CASE;
                LPC_CURRENT_STATE <= SYNC_COMPLETE;
             ELSIF SDP_WR_BUSY = '1' THEN
-               SDP_WR_BUSY <= SDP_WR_BUSY_BIT;
+               SDP_WR_BUSY <= LPC_BUFFER(0);
                IF CYCLE_TYPE = MEM_READ THEN
                   LPC_BUFFER(0) <= SDP_WR_BUSY_TOGGLE;
                   SDP_WR_BUSY_TOGGLE <= NOT SDP_WR_BUSY_TOGGLE;
