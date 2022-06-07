@@ -74,7 +74,8 @@
 
 LIBRARY IEEE;
 USE IEEE.STD_LOGIC_1164.ALL;
-USE IEEE.STD_LOGIC_UNSIGNED.ALL;
+USE IEEE.NUMERIC_STD.ALL;
+
 ENTITY openxenium IS
    PORT (
       HEADER_MISO1 : IN STD_LOGIC;
@@ -187,6 +188,17 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL SDP_ID_EN : STD_LOGIC := '0';
    SIGNAL SDP_WR_EN : STD_LOGIC := '0';
    SIGNAL SDP_WR_ERASE : STD_LOGIC := '0';
+   SIGNAL ERASE_END : STD_LOGIC := '0';
+   TYPE ERASE_END_STATE_MACHINE IS (
+   START,
+   WR_EN,
+   ERASE,
+   BUSY
+   );
+   SIGNAL ERASE_END_CURRENT_STATE : ERASE_END_STATE_MACHINE := START;
+   SIGNAL ERASE_END_SECTOR : UNSIGNED (3 DOWNTO 0) := x"0";
+   SIGNAL ERASE_END_COUNT : UNSIGNED (3 DOWNTO 0) := x"0";
+   SIGNAL ERASE_END_ITER : INTEGER RANGE 0 TO 8 := 0;
    SIGNAL SDP_WR_BUSY : STD_LOGIC := '0';
    SIGNAL SDP_WR_BUSY_TOGGLE : STD_LOGIC := '0';
    SIGNAL SDP_COUNT : INTEGER RANGE 0 TO 4 := 0;
@@ -284,6 +296,8 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
       SDP_ID_EN <= '0';
       SDP_WR_EN <= '0';
       SDP_WR_ERASE <= '0';
+      ERASE_END <= '0';
+      ERASE_END_CURRENT_STATE <= START;
       SDP_WR_BUSY <= '0';
       SDP_COUNT <= 0;
       QPI_EN <= QPI_EN_OFF;
@@ -355,9 +369,13 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
       --ADDRESS GATHERING
       WHEN ADDRESS =>
          COUNT <= COUNT - 1;
-         IF LPC_CYCLE_MEM = '1' AND REG_00EC(0) = '1' THEN -- BBIO
+         IF LPC_CYCLE_MEM = '1' AND (REG_00EC(0) = '1' OR ERASE_END = '1') THEN
             IF COUNT = 0 THEN
-               LPC_CURRENT_STATE <= WAIT_START; -- Memory transactions are disabled while in BBIO mode, reset state machine.
+               IF ERASE_END = '1' AND CYCLE_TYPE = MEM_READ THEN
+                  LPC_CURRENT_STATE <= TAR1;
+               ELSE
+                  LPC_CURRENT_STATE <= WAIT_START; -- Memory transactions are disabled, reset state machine.
+               END IF;
             END IF;
          ELSIF COUNT = 6 THEN
             IF SDP_WR_EN = '1' THEN
@@ -472,13 +490,22 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
          LPC_CURRENT_STATE <= WRITE_DATA1;
       WHEN WRITE_DATA1 =>
          LPC_BUFFER(7 DOWNTO 4) <= LPC_LAD;
-         IF CYCLE_TYPE = MEM_WRITE THEN
+         IF CYCLE_TYPE = MEM_WRITE AND ERASE_END = '0' THEN
             QPI_BUFFER(7 DOWNTO 4) <= LPC_LAD;
             QPI_BUFFER(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
-            IF SDP_WR_ERASE = '1' AND LPC_LAD & LPC_BUFFER(3 DOWNTO 0) /= SDP_ERASE_SECTOR_DATA THEN --x"30"
-               SDP_WR_ERASE <= '0';
-               SDP_WR_EN <= '0';
-               QPI_EN <= QPI_EN_OFF;
+            IF SDP_WR_ERASE = '1' THEN
+               IF LPC_LAD & LPC_BUFFER(3 DOWNTO 0) /= SDP_ERASE_SECTOR_DATA THEN --x"30"
+                  SDP_WR_ERASE <= '0';
+                  SDP_WR_EN <= '0';
+                  QPI_EN <= QPI_EN_OFF;
+               ELSIF REG_00EF_WRITE(3 DOWNTO 0) = x"A" AND LPC_ADDRESS(17 DOWNTO 16) = "11" THEN
+                  SDP_WR_ERASE <= '0';
+                  SDP_WR_EN <= '0';
+                  QPI_EN <= QPI_EN_OFF;
+                  ERASE_END_SECTOR <= UNSIGNED(LPC_ADDRESS(15 DOWNTO 12));
+                  ERASE_END <= '1';
+                  SDP_WR_BUSY <= '1';
+               END IF;
             END IF;
          END IF;
          LPC_CURRENT_STATE <= TAR1;
@@ -557,18 +584,20 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                      -- Bank 0 will disable state machine and release D0 & A20M# to boot from TSOP after reset.
                      TSOPBOOT <= '1';
                   ELSIF LPC_BUFFER(3 DOWNTO 2) = "11" THEN
-                     IF LPC_BUFFER(1 DOWNTO 0) /= QPI_CHIP THEN
+                     IF LPC_BUFFER(1 DOWNTO 0) /= QPI_CHIP AND ERASE_END = '0' THEN
                         QPI_CHIP <= LPC_BUFFER(1 DOWNTO 0);
                         SDP_WR_BUSY <= '1';
                      END IF;
-                  ELSE
+                  ELSIF ERASE_END = '0' THEN
                      REG_00EF_WRITE(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
                   END IF;
                WHEN OTHERS =>
                END CASE;
                LPC_CURRENT_STATE <= SYNC_COMPLETE;
             ELSIF SDP_WR_BUSY = '1' THEN
-               SDP_WR_BUSY <= LPC_BUFFER(0);
+               IF ERASE_END = '0' THEN
+                  SDP_WR_BUSY <= LPC_BUFFER(0);
+               END IF;
                IF CYCLE_TYPE = MEM_READ THEN
                   LPC_BUFFER(0) <= SDP_WR_BUSY_TOGGLE;
                   SDP_WR_BUSY_TOGGLE <= NOT SDP_WR_BUSY_TOGGLE;
@@ -655,6 +684,84 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
          END IF;
          LPC_CURRENT_STATE <= WAIT_START;
       END CASE;
+      IF ERASE_END = '1' THEN
+         ERASE_END_ITER <= ERASE_END_ITER - 1;
+         CASE ERASE_END_CURRENT_STATE IS
+         WHEN START =>
+            IF REG_00EF_WRITE(3 DOWNTO 0) = x"A" THEN
+               IF ERASE_END_SECTOR < 8 THEN
+                  -- 8 4KiB sector erase @ 0x1F0000-0x1F7FFF
+                  ERASE_END_COUNT <= 7 - ERASE_END_SECTOR;
+               ELSIF ERASE_END_SECTOR < 10 THEN
+                  -- 2 4KiB sector erase @ 0x1F8000-0x1F9FFF
+                  ERASE_END_COUNT <= 9 - ERASE_END_SECTOR;
+               ELSIF ERASE_END_SECTOR < 12 THEN
+                  -- 2 4KiB sector erase @ 0x1FA000-0x1FBFFF
+                  ERASE_END_COUNT <= 11 - ERASE_END_SECTOR;
+               ELSE
+                  -- 4 4KiB sector erase @ 0x1FC000-0x1FFFFF
+                  ERASE_END_COUNT <= 15 - ERASE_END_SECTOR;
+               END IF;
+               ERASE_END_ITER <= 2;
+               ERASE_END_CURRENT_STATE <= WR_EN;
+            ELSE
+               SDP_WR_BUSY <= '0';
+               ERASE_END <= '0';
+            END IF;
+         WHEN WR_EN =>
+            IF ERASE_END_ITER = 2 THEN
+               QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_WR_EN;
+               QPI_EN <= QPI_EN_OUT;
+            ELSIF ERASE_END_ITER = 0 THEN
+               QPI_EN <= QPI_EN_OFF;
+               ERASE_END_ITER <= 8;
+               ERASE_END_CURRENT_STATE <= ERASE;
+            END IF;
+         WHEN ERASE =>
+            IF ERASE_END_ITER = 8 THEN
+               QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_ERASE_4K;
+               QPI_EN <= QPI_EN_OUT;
+            ELSIF ERASE_END_ITER = 7 THEN
+               QPI_BUFFER(7 DOWNTO 0) <= x"1F";
+            ELSIF ERASE_END_ITER = 6 THEN
+               QPI_BUFFER(3 DOWNTO 0) <= STD_LOGIC_VECTOR(ERASE_END_SECTOR);
+            ELSIF ERASE_END_ITER = 5 THEN
+               QPI_BUFFER(3 DOWNTO 0) <= x"0";
+            ELSIF ERASE_END_ITER = 4 THEN
+               QPI_BUFFER(3 DOWNTO 0) <= x"0";
+            ELSIF ERASE_END_ITER = 3 THEN
+               QPI_BUFFER(3 DOWNTO 0) <= x"0";
+            ELSIF ERASE_END_ITER = 0 THEN
+               QPI_EN <= QPI_EN_OFF;
+               ERASE_END_ITER <= 4;
+               ERASE_END_CURRENT_STATE <= BUSY;
+            END IF;
+         WHEN BUSY =>
+            IF ERASE_END_ITER = 4 THEN
+               QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_RSR1;
+               QPI_EN <= QPI_EN_OUT;
+            ELSIF ERASE_END_ITER = 2 THEN
+               QPI_EN <= QPI_EN_IN;
+            ELSIF ERASE_END_ITER = 0 THEN
+               QPI_EN <= QPI_EN_OFF;
+               IF QPI_IO(0) = '1' THEN
+                  ERASE_END_ITER <= 4;
+               ELSE
+                  IF ERASE_END_COUNT > 0 THEN
+                     ERASE_END_COUNT <= ERASE_END_COUNT - 1;
+                     ERASE_END_SECTOR <= ERASE_END_SECTOR + 1;
+                     ERASE_END_ITER <= 2;
+                     ERASE_END_CURRENT_STATE <= WR_EN;
+                  ELSE
+                     SDP_WR_BUSY <= '0';
+                     ERASE_END <= '0';
+                     ERASE_END_CURRENT_STATE <= START;
+                  END IF;
+               END IF;
+            END IF;
+         WHEN OTHERS =>
+         END CASE;
+      END IF;
    END IF;
 END PROCESS;
 END Behavioral;
