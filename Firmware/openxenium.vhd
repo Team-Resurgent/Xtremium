@@ -139,7 +139,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    CONSTANT XENIUM_00EC : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EC"; -- QPI Bitbang Control Register
    CONSTANT XENIUM_00ED : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00ED"; -- QPI Bitbang Data Register
    CONSTANT XENIUM_00EE : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EE"; -- RGB LED Control Register
-   CONSTANT XENIUM_00EF : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EF"; -- SPI and Banking Control Register
+   CONSTANT XENIUM_00EF : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EF"; -- SPI Bitbang and Banking Control Register
    CONSTANT REG_00EE_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"AA"; -- OpenXenium QPI (OpenXenium & Genuine Xenium return 0x55)
    SIGNAL REG_00EC : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"00"; -- X,X,X,X,IN,CLK,CS,BBIO
    SIGNAL REG_00ED : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"00"; -- IN[7:4],OUT[3:0]
@@ -328,12 +328,12 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             CYCLE_TYPE <= IO_WRITE;
             COUNT <= 3;
             LPC_CURRENT_STATE <= ADDRESS;
-         ELSIF LPC_LAD(3 DOWNTO 1) = "010" AND REG_00EC(0) = '0' THEN
+         ELSIF LPC_LAD(3 DOWNTO 1) = "010" THEN
             CYCLE_TYPE <= MEM_READ;
             COUNT <= 7;
             LPC_CURRENT_STATE <= ADDRESS;
             SDP_COUNT <= 0;
-         ELSIF LPC_LAD(3 DOWNTO 1) = "011" AND REG_00EC(0) = '0' THEN
+         ELSIF LPC_LAD(3 DOWNTO 1) = "011" THEN
             CYCLE_TYPE <= MEM_WRITE;
             COUNT <= 7;
             LPC_CURRENT_STATE <= ADDRESS;
@@ -348,7 +348,11 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
       --ADDRESS GATHERING
       WHEN ADDRESS =>
          COUNT <= COUNT - 1;
-         IF COUNT = 7 THEN
+         IF LPC_CYCLE_MEM = '1' AND REG_00EC(0) = '1' THEN -- BBIO
+            IF COUNT = 0 THEN
+               LPC_CURRENT_STATE <= WAIT_START; -- Memory transactions are disabled while in BBIO mode, reset state machine.
+            END IF;
+         ELSIF COUNT = 7 THEN
             -- Set recovery bank on power-up if switch is activated.
             IF SWITCH_RECOVER_LATCH = '0' THEN
                SWITCH_RECOVER_LATCH <= '1';
