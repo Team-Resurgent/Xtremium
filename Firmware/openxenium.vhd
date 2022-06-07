@@ -41,19 +41,19 @@
 --     7 BANK1 (USER BIOS)     0 |0 |X    0x000000 512KiB 0x200000-0x27FFFF
 --     8 BANK2 (USER BIOS)     0 |1 |X    0x080000 512KiB 0x280000-0x2FFFFF
 --     9 BANK1 (USER BIOS)     0 |X |X    0x000000 1MiB   0x200000-0x2FFFFF
---    10 RECOVERY              1 |1 |1    0x1C0000 256KiB 0x1C0000-0x1FFFFF See NOTE 1.
+--    10 RECOVER               1 |1 |1    0x1C0000 256KiB 0x1C0000-0x1FFFFF See NOTE 1.
 --    11 (No address masking)  X |X |X    N/A      16MiB  0x000000-0xFFFFFF This maps all of flash memory into the LPC MMIO window (0xFF000000-0xFFFFFFFF).
 --    12 (U2 QPI Chip Select)  X |X |X    N/A      N/A    N/A               This is the default selected chip.
 --    13 (U3 QPI Chip Select)  X |X |X    N/A      N/A    N/A
 --    14 (U4 QPI Chip Select)  X |X |X    N/A      N/A    N/A
 --    15 (U2 QPI Chip Select)  X |X |X    N/A      N/A    N/A
 --
---NOTE 1: The RECOVERY bank can also be activated by the physical switch on the Xenium. This sets bank 10 on power-up.
+--NOTE 1: The RECOVER bank (10) can be set on power-up by the physical switch on the Xenium.
 --This bank also contains non-volatile storage of settings & an EEPROM backup in the smaller sectors at the end of the flash memory.
 --The memory map is shown below:
---     (1C0000 to 1DFFFF PROTECTED AREA 128kbyte recovery bios)
---     (1E0000 to 1FBFFF Additional XeniumOS Data)
---     (1FC000 to 1FFFFF Contains eeprom backup, XeniumOS settings)
+--     (0x1C0000 to 0x1DFFFF PROTECTED AREA 128KiB recovery bootloader)
+--     (0x1E0000 to 0x1FBFFF Additional XeniumOS Data)
+--     (0x1FC000 to 0x1FFFFF Contains EEPROM backup & XeniumOS settings)
 --
 --
 --**XENIUM CONTROL WRITE/READ REGISTERS**
@@ -63,7 +63,7 @@
 --X,SCK,CS,MOSI,BANK[3:0]
 --
 --**0x00EF READ:**
---RECOVERY (Active Low),BUSY,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
+--RECOVER (Active Low),BUSY,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
 --
 --**0x00EE WRITE:**
 --X,X,X,X,X,B,G,R (DEFAULT LED ON POWER UP IS RED)
@@ -97,7 +97,7 @@ ENTITY openxenium IS
       LPC_CLK : IN STD_LOGIC;
       LPC_RST : IN STD_LOGIC;
 
-      SWITCH_RECOVER : IN STD_LOGIC -- Recovery is active low and requires an external pull-up resistor to 3.3V.
+      SWITCH_RECOVER : IN STD_LOGIC -- RECOVER pin is active low and requires an external pull-up resistor to 3.3V.
    );
 END openxenium;
 
@@ -136,8 +136,8 @@ ARCHITECTURE Behavioral OF openxenium IS
    --IO READ/WRITE REGISTERS VISIBLE TO THE LPC BUS
    --BITS MARKED 'X' HAVE AN UNKNOWN FUNCTION OR ARE UNUSED.
    --Bit masks are all shown upper nibble first.
-   CONSTANT XENIUM_00EC : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EC"; -- QPI Bitbang Control Register
-   CONSTANT XENIUM_00ED : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00ED"; -- QPI Bitbang Data Register
+   CONSTANT XENIUM_00EC : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EC"; -- QPI Bitbang Control Register (Available when RECOVER pin remains active low)
+   CONSTANT XENIUM_00ED : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00ED"; -- QPI Bitbang Data Register (Available when RECOVER pin remains active low)
    CONSTANT XENIUM_00EE : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EE"; -- RGB LED Control Register
    CONSTANT XENIUM_00EF : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EF"; -- SPI Bitbang and Banking Control Register
    CONSTANT REG_00EE_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"AA"; -- OpenXenium QPI (OpenXenium & Genuine Xenium return 0x55)
@@ -145,7 +145,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL REG_00ED : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"00"; -- IN[7:4],OUT[3:0]
    SIGNAL REG_00EE_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"01"; -- X,X,X,X,X,B,G,R (Red is default LED colour on power-up)
    SIGNAL REG_00EF_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"01"; -- X,SCK,CS,MOSI,BANK[3:0]
-   SIGNAL REG_00EF_READ : STD_LOGIC_VECTOR (7 DOWNTO 0); -- RECOVERY (Active Low),BUSY,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
+   SIGNAL REG_00EF_READ : STD_LOGIC_VECTOR (7 DOWNTO 0); -- RECOVER (Active Low),BUSY,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
    SIGNAL SWITCH_RECOVER_LATCH : STD_LOGIC := '0';
 
    --QPI READ/WRITE REGISTERS FOR FLASH MEMORY
@@ -311,6 +311,13 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                   ELSE
                      QPI_EN_INIT_AGAIN <= '0';
                      QPI_EN_INIT_LATCH <= '1';
+                     -- Set RECOVER bank on power-up if switch is activated.
+                     IF SWITCH_RECOVER_LATCH = '0' THEN
+                        SWITCH_RECOVER_LATCH <= '1';
+                        IF SWITCH_RECOVER = '0' THEN
+                           REG_00EF_WRITE(3 DOWNTO 0) <= x"A";
+                        END IF;
+                     END IF;
                   END IF;
                ELSE
                   COUNT <= COUNT - 1;
@@ -351,14 +358,6 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
          IF LPC_CYCLE_MEM = '1' AND REG_00EC(0) = '1' THEN -- BBIO
             IF COUNT = 0 THEN
                LPC_CURRENT_STATE <= WAIT_START; -- Memory transactions are disabled while in BBIO mode, reset state machine.
-            END IF;
-         ELSIF COUNT = 7 THEN
-            -- Set recovery bank on power-up if switch is activated.
-            IF SWITCH_RECOVER_LATCH = '0' THEN
-               SWITCH_RECOVER_LATCH <= '1';
-               IF SWITCH_RECOVER = '0' THEN
-                  REG_00EF_WRITE(3 DOWNTO 0) <= x"A";
-               END IF;
             END IF;
          ELSIF COUNT = 6 THEN
             IF SDP_WR_EN = '1' THEN
@@ -455,10 +454,11 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                LPC_CURRENT_STATE <= TAR1;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
                LPC_CURRENT_STATE <= WRITE_DATA0;
-            ELSIF LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3 DOWNTO 2) = XENIUM_00EC(15 DOWNTO 2) THEN
-               IF CYCLE_TYPE = IO_READ THEN
+            ELSIF LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3 DOWNTO 1) = XENIUM_00EE(15 DOWNTO 1) OR
+                  (LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3 DOWNTO 2) = XENIUM_00EC(15 DOWNTO 2) AND (REG_00EC(0) = '1' OR SWITCH_RECOVER = '0')) THEN
+               IF LPC_CYCLE_WRITE = '0' THEN
                   LPC_CURRENT_STATE <= TAR1;
-               ELSIF CYCLE_TYPE = IO_WRITE THEN
+               ELSE
                   LPC_CURRENT_STATE <= WRITE_DATA0;
                END IF;
             ELSE
