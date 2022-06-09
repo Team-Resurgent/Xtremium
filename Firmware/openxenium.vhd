@@ -174,9 +174,9 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL QPI_EN_INIT_LATCH : STD_LOGIC := '0';
 
    --SOFTWARE DATA PROTECTION (SDP) COMMAND SEQUENCE
-   CONSTANT SDP_TICK_ADDR : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"AAAA";
+   CONSTANT SDP_TICK_ADDR : STD_LOGIC_VECTOR (11 DOWNTO 0) := x"AAA";
    CONSTANT SDP_TICK_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"AA";
-   CONSTANT SDP_TOCK_ADDR : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"5555";
+   CONSTANT SDP_TOCK_ADDR : STD_LOGIC_VECTOR (11 DOWNTO 0) := x"555";
    CONSTANT SDP_TOCK_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"55";
    CONSTANT SDP_ID_ENTRY_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"90";
    CONSTANT SDP_ID_EXIT_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"F0";
@@ -621,8 +621,8 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                      SDP_ID_EN <= '0';
                   END IF;
                ELSE
-                  CASE LPC_ADDRESS(15 DOWNTO 0) IS
-                  WHEN SDP_TICK_ADDR => --x"AAAA"
+                  CASE LPC_ADDRESS(11 DOWNTO 0) IS
+                  WHEN SDP_TICK_ADDR => --x"AAA"
                      IF (SDP_COUNT = 0 OR SDP_COUNT = 3) AND LPC_BUFFER = SDP_TICK_DATA THEN --x"AA"
                         SDP_COUNT <= SDP_COUNT + 1;
                      ELSIF SDP_COUNT = 2 AND LPC_BUFFER = SDP_ID_ENTRY_DATA THEN --x"90"
@@ -636,7 +636,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                      ELSE
                         SDP_COUNT <= 0;
                      END IF;
-                  WHEN SDP_TOCK_ADDR => --x"5555"
+                  WHEN SDP_TOCK_ADDR => --x"555"
                      IF (SDP_COUNT = 1 OR SDP_COUNT = 4) AND LPC_BUFFER = SDP_TOCK_DATA THEN --x"55"
                         IF SDP_COUNT = 4 THEN
                            SDP_WR_EN <= A20MLEVEL;
