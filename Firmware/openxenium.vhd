@@ -69,7 +69,7 @@
 --X,X,X,X,X,B,G,R (DEFAULT LED ON POWER UP IS RED)
 --
 --**0x00EE READ:**
---Returns 0xAA for OpenXenium QPI (OpenXenium & Genuine Xenium return 0x55)
+--Genuine Xenium return 0x55
 --
 
 LIBRARY IEEE;
@@ -141,7 +141,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    CONSTANT XENIUM_00ED : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00ED"; -- QPI Bitbang Data Register (Available when RECOVER pin remains active low)
    CONSTANT XENIUM_00EE : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EE"; -- RGB LED Control Register
    CONSTANT XENIUM_00EF : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EF"; -- SPI Bitbang and Banking Control Register
-   CONSTANT REG_00EE_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"AA"; -- OpenXenium QPI (OpenXenium & Genuine Xenium return 0x55)
+   CONSTANT REG_00EE_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"55"; -- Genuine Xenium
    SIGNAL REG_00EC : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"00"; -- X,X,X,X,IN,CLK,CS,BBIO
    SIGNAL REG_00ED : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"00"; -- IN[7:4],OUT[3:0]
    SIGNAL REG_00EE_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"01"; -- X,X,X,X,X,B,G,R (Red is default LED colour on power-up)
@@ -178,14 +178,132 @@ ARCHITECTURE Behavioral OF openxenium IS
    CONSTANT SDP_TICK_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"AA";
    CONSTANT SDP_TOCK_ADDR : STD_LOGIC_VECTOR (11 DOWNTO 0) := x"555";
    CONSTANT SDP_TOCK_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"55";
-   CONSTANT SDP_ID_ENTRY_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"90";
-   CONSTANT SDP_ID_EXIT_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"F0";
+   CONSTANT SDP_RESET_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"F0";
+   CONSTANT SDP_ID_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"90";
    CONSTANT SDP_ID_VENDOR : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"01";
    CONSTANT SDP_ID_DEVICE : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"C4";
+   CONSTANT SDP_CFI_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"98";
    CONSTANT SDP_WRITE_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"A0";
    CONSTANT SDP_ERASE_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"80";
    CONSTANT SDP_ERASE_SECTOR_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"30";
    SIGNAL SDP_ID_EN : STD_LOGIC := '0';
+   SIGNAL SDP_CFI_EN : STD_LOGIC := '0';
+   TYPE SDP_CFI_ROM_TYPE IS ARRAY (16#10# TO 16#7F#) OF STD_LOGIC_VECTOR (7 DOWNTO 0);
+   CONSTANT SDP_CFI_ROM : SDP_CFI_ROM_TYPE := (
+   -- Common Flash Interface (S29AL016J Rev Q section 9)
+   16#10# => x"51", -- 20h
+   16#11# => x"52", -- 22h
+   16#12# => x"59", -- 24h
+   16#13# => x"02", -- 26h
+   16#14# => x"00", -- 28h
+   16#15# => x"40", -- 2Ah
+   16#16# => x"00", -- 2Ch
+   16#17# => x"00", -- 2Eh
+   16#18# => x"00", -- 30h
+   16#19# => x"00", -- 32h
+   16#1A# => x"00", -- 34h
+   16#1B# => x"27", -- 36h
+   16#1C# => x"36", -- 38h
+   16#1D# => x"00", -- 3Ah
+   16#1E# => x"00", -- 3Ch
+   16#1F# => x"03", -- 3Eh
+   16#20# => x"00", -- 40h
+   16#21# => x"09", -- 42h
+   16#22# => x"00", -- 44h
+   16#23# => x"05", -- 46h
+   16#24# => x"00", -- 48h
+   16#25# => x"04", -- 4Ah
+   16#26# => x"00", -- 4Ch
+   16#27# => x"15", -- 4Eh
+   16#28# => x"02", -- 50h
+   16#29# => x"00", -- 52h
+   16#2A# => x"00", -- 54h
+   16#2B# => x"00", -- 56h
+   16#2C# => x"04", -- 58h
+   16#2D# => x"00", -- 5Ah
+   16#2E# => x"00", -- 5Ch
+   16#2F# => x"40", -- 5Eh
+   16#30# => x"00", -- 60h
+   16#31# => x"01", -- 62h
+   16#32# => x"00", -- 64h
+   16#33# => x"20", -- 66h
+   16#34# => x"00", -- 68h
+   16#35# => x"00", -- 6Ah
+   16#36# => x"00", -- 6Ch
+   16#37# => x"80", -- 6Eh
+   16#38# => x"00", -- 70h
+   16#39# => x"1E", -- 72h
+   16#3A# => x"00", -- 74h
+   16#3B# => x"00", -- 76h
+   16#3C# => x"01", -- 78h
+   16#3D# => x"00", -- 7Ah
+   16#3E# => x"00", -- 7Ch
+   16#3F# => x"00", -- 7Eh
+   16#40# => x"50", -- 80h
+   16#41# => x"52", -- 82h
+   16#42# => x"49", -- 84h
+   16#43# => x"31", -- 86h
+   16#44# => x"33", -- 88h
+   16#45# => x"0C", -- 8Ah
+   16#46# => x"02", -- 8Ch
+   16#47# => x"01", -- 8Eh
+   16#48# => x"01", -- 90h
+   16#49# => x"04", -- 92h
+   16#4A# => x"00", -- 94h
+   16#4B# => x"00", -- 96h
+   16#4C# => x"00", -- 98h
+   16#4D# => x"00", -- 9Ah
+   16#4E# => x"00", -- 9Ch
+   16#4F# => x"03", -- 9Eh
+   16#50# => x"00", -- A0h
+   16#51# => x"00", -- A2h
+   16#52# => x"00", -- A4h
+   16#53# => x"00", -- A6h
+   16#54# => x"00", -- A8h
+   16#55# => x"00", -- AAh
+   16#56# => x"00", -- ACh
+   16#57# => x"00", -- AEh
+   16#58# => x"00", -- B0h
+   16#59# => x"00", -- B2h
+   16#5A# => x"00", -- B4h
+   16#5B# => x"00", -- B6h
+   16#5C# => x"00", -- B8h
+   16#5D# => x"00", -- BAh
+   16#5E# => x"00", -- BCh
+   16#5F# => x"06", -- BEh
+   16#60# => x"00", -- C0h
+   16#61# => x"09", -- C2h
+   16#62# => x"00", -- C4h
+   16#63# => x"05", -- C6h
+   16#64# => x"00", -- C8h
+   16#65# => x"04", -- CAh
+   16#66# => x"00", -- CCh
+   16#67# => x"15", -- CEh
+   16#68# => x"02", -- D0h
+   16#69# => x"00", -- D2h
+   16#6A# => x"00", -- D4h
+   16#6B# => x"00", -- D6h
+   16#6C# => x"04", -- D8h
+   16#6D# => x"00", -- DAh
+   16#6E# => x"00", -- DCh
+   16#6F# => x"40", -- DEh
+   16#70# => x"00", -- E0h
+   16#71# => x"01", -- E2h
+   16#72# => x"00", -- E4h
+   16#73# => x"20", -- E6h
+   16#74# => x"00", -- E8h
+   16#75# => x"00", -- EAh
+   16#76# => x"00", -- ECh
+   16#77# => x"80", -- EEh
+   16#78# => x"00", -- F0h
+   16#79# => x"1E", -- F2h
+   16#7A# => x"00", -- F4h
+   16#7B# => x"00", -- F6h
+   16#7C# => x"01", -- F8h
+   16#7D# => x"00", -- FAh
+   16#7E# => x"00", -- FCh
+   16#7F# => x"00"  -- FEh
+   );
    SIGNAL SDP_WR_EN : STD_LOGIC := '0';
    SIGNAL SDP_WR_ERASE : STD_LOGIC := '0';
    SIGNAL ERASE_END : STD_LOGIC := '0';
@@ -295,6 +413,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
       --Assert the A20M# pin on the CPU, only if not booting from TSOP.
       A20MLEVEL <= TSOPBOOT;
       SDP_ID_EN <= '0';
+      SDP_CFI_EN <= '0';
       SDP_WR_EN <= '0';
       SDP_WR_ERASE <= '0';
       ERASE_END <= '0';
@@ -397,7 +516,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_READ;
             END IF;
          ELSIF COUNT = 5 THEN
-            IF SDP_WR_EN = '1' OR SDP_WR_BUSY = '1' OR (SDP_ID_EN = '0' AND CYCLE_TYPE = MEM_READ) THEN
+            IF SDP_WR_EN = '1' OR SDP_WR_BUSY = '1' OR (SDP_ID_EN = '0' AND SDP_CFI_EN = '0' AND CYCLE_TYPE = MEM_READ) THEN
                QPI_EN <= QPI_EN_OUT;
             END IF;
             --BANK SELECTION
@@ -585,7 +704,7 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                      -- Bank 0 will disable state machine and release D0 & A20M# to boot from TSOP after reset.
                      TSOPBOOT <= '1';
                   ELSIF LPC_BUFFER(3 DOWNTO 2) = "11" THEN
-                     IF LPC_BUFFER(1 DOWNTO 0) /= QPI_CHIP AND ERASE_END = '0' THEN
+                     IF LPC_BUFFER(1 DOWNTO 0) /= QPI_CHIP AND ERASE_END = '0' AND SDP_ID_EN = '0' AND SDP_CFI_EN = '0' THEN
                         QPI_CHIP <= LPC_BUFFER(1 DOWNTO 0);
                         SDP_WR_BUSY <= '1';
                      END IF;
@@ -616,21 +735,34 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                      LPC_BUFFER <= SDP_ID_DEVICE;
                   END IF;
                   LPC_CURRENT_STATE <= SYNC_COMPLETE;
+               ELSIF SDP_CFI_EN = '1' THEN
+                  IF UNSIGNED(LPC_ADDRESS(7 DOWNTO 1)) < x"10" THEN
+                     LPC_BUFFER <= x"FF";
+                  ELSE
+                     LPC_BUFFER <= SDP_CFI_ROM(TO_INTEGER(UNSIGNED(LPC_ADDRESS(7 DOWNTO 1)) - x"10"));
+                  END IF;
+                  LPC_CURRENT_STATE <= SYNC_COMPLETE;
                END IF;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
                IF SDP_WR_EN = '1' THEN
                   SDP_WR_BUSY <= '1';
                   QPI_EN <= QPI_EN_OFF;
                ELSIF SDP_ID_EN = '1' THEN
-                  IF LPC_BUFFER = SDP_ID_EXIT_DATA THEN --x"F0"
+                  IF LPC_BUFFER = SDP_RESET_DATA THEN --x"F0"
                      SDP_ID_EN <= '0';
                   END IF;
+               ELSIF SDP_CFI_EN = '1' THEN
+                  IF LPC_BUFFER = SDP_RESET_DATA THEN --x"F0"
+                     SDP_CFI_EN <= '0';
+                  END IF;
+               ELSIF LPC_ADDRESS(7 DOWNTO 0) = SDP_TICK_ADDR(7 DOWNTO 0) AND LPC_BUFFER = SDP_CFI_DATA THEN --x"AA" AND x"98"
+                  SDP_CFI_EN <= '1';
                ELSE
                   CASE LPC_ADDRESS(11 DOWNTO 0) IS
                   WHEN SDP_TICK_ADDR => --x"AAA"
                      IF (SDP_COUNT = 0 OR SDP_COUNT = 3) AND LPC_BUFFER = SDP_TICK_DATA THEN --x"AA"
                         SDP_COUNT <= SDP_COUNT + 1;
-                     ELSIF SDP_COUNT = 2 AND LPC_BUFFER = SDP_ID_ENTRY_DATA THEN --x"90"
+                     ELSIF SDP_COUNT = 2 AND LPC_BUFFER = SDP_ID_DATA THEN --x"90"
                         SDP_ID_EN <= '1';
                         SDP_COUNT <= 0;
                      ELSIF SDP_COUNT = 2 AND LPC_BUFFER = SDP_WRITE_DATA THEN --x"A0"
@@ -694,18 +826,18 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
          CASE ERASE_END_CURRENT_STATE IS
          WHEN START =>
             IF REG_00EF_WRITE(3 DOWNTO 0) = x"A" THEN
-               IF ERASE_END_SECTOR < 8 THEN
+               IF ERASE_END_SECTOR <= x"7" THEN
                   -- 8 4KiB sector erase @ 0x1F0000-0x1F7FFF
-                  ERASE_END_COUNT <= 7 - ERASE_END_SECTOR;
-               ELSIF ERASE_END_SECTOR < 10 THEN
+                  ERASE_END_COUNT <= x"7" - ERASE_END_SECTOR;
+               ELSIF ERASE_END_SECTOR <= x"9" THEN
                   -- 2 4KiB sector erase @ 0x1F8000-0x1F9FFF
-                  ERASE_END_COUNT <= 9 - ERASE_END_SECTOR;
-               ELSIF ERASE_END_SECTOR < 12 THEN
+                  ERASE_END_COUNT <= x"9" - ERASE_END_SECTOR;
+               ELSIF ERASE_END_SECTOR <= x"B" THEN
                   -- 2 4KiB sector erase @ 0x1FA000-0x1FBFFF
-                  ERASE_END_COUNT <= 11 - ERASE_END_SECTOR;
+                  ERASE_END_COUNT <= x"B" - ERASE_END_SECTOR;
                ELSE
                   -- 4 4KiB sector erase @ 0x1FC000-0x1FFFFF
-                  ERASE_END_COUNT <= 15 - ERASE_END_SECTOR;
+                  ERASE_END_COUNT <= x"F" - ERASE_END_SECTOR;
                END IF;
                ERASE_END_ITER <= 2;
                ERASE_END_CURRENT_STATE <= WR_EN;
