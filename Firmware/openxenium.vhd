@@ -193,7 +193,8 @@ ARCHITECTURE Behavioral OF openxenium IS
    START,
    WR_EN,
    ERASE,
-   BUSY
+   BUSY,
+   STOP
    );
    SIGNAL ERASE_END_CURRENT_STATE : ERASE_END_STATE_MACHINE := START;
    SIGNAL ERASE_END_SECTOR : UNSIGNED (3 DOWNTO 0) := x"0";
@@ -597,6 +598,10 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
             ELSIF SDP_WR_BUSY = '1' THEN
                IF ERASE_END = '0' THEN
                   SDP_WR_BUSY <= LPC_BUFFER(0);
+               ELSIF ERASE_END = '1' AND ERASE_END_CURRENT_STATE = STOP THEN
+                  ERASE_END <= '0';
+                  ERASE_END_CURRENT_STATE <= START;
+                  SDP_WR_BUSY <= '0';
                END IF;
                IF CYCLE_TYPE = MEM_READ THEN
                   LPC_BUFFER(0) <= SDP_WR_BUSY_TOGGLE;
@@ -753,12 +758,11 @@ PROCESS (LPC_CLK, LPC_RST) BEGIN
                      ERASE_END_ITER <= 2;
                      ERASE_END_CURRENT_STATE <= WR_EN;
                   ELSE
-                     SDP_WR_BUSY <= '0';
-                     ERASE_END <= '0';
-                     ERASE_END_CURRENT_STATE <= START;
+                     ERASE_END_CURRENT_STATE <= STOP;
                   END IF;
                END IF;
             END IF;
+         WHEN STOP =>
          WHEN OTHERS =>
          END CASE;
       END IF;
