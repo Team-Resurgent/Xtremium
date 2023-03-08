@@ -102,6 +102,9 @@ ENTITY openxenium IS
       LPC_LAD : INOUT STD_LOGIC_VECTOR (3 DOWNTO 0);
       LPC_CLK : IN STD_LOGIC;
       LPC_RST : IN STD_LOGIC;
+      LPC_LFRAME : IN STD_LOGIC;
+
+      FTDI_RXD : OUT STD_LOGIC;
 
       SWITCH_RECOVER : IN STD_LOGIC -- RECOVER pin is active low and requires an external pull-up resistor to 3.3V.
    );
@@ -116,7 +119,6 @@ ARCHITECTURE Behavioral OF openxenium IS
          CLK0_OUT : OUT STD_LOGIC
       );
    END COMPONENT;
-
    SIGNAL CLK33 : STD_LOGIC; -- LPC clock @ 33.3MHz
    SIGNAL CLK96 : STD_LOGIC; -- dcm33to96 @ 96MHz
    SIGNAL CTR33 : UNSIGNED (63 DOWNTO 0) := (OTHERS => '0'); -- Monotonic 64-bit TSC of LPC clock @ 33.3MHz
@@ -133,6 +135,27 @@ ARCHITECTURE Behavioral OF openxenium IS
    6 => CTR(55 DOWNTO 48),
    7 => CTR(63 DOWNTO 56)
    );
+
+   COMPONENT uart_tx IS
+      PORT (
+         TX_CLK : IN STD_LOGIC;
+         TX_BYTE : IN STD_LOGIC_VECTOR (7 DOWNTO 0);
+         TX_START : IN STD_LOGIC;
+         TX_IDLE : OUT STD_LOGIC;
+         TX : OUT STD_LOGIC
+      );
+   END COMPONENT;
+   SIGNAL TX_CLK : STD_LOGIC;
+   SIGNAL TX_BYTE : STD_LOGIC_VECTOR (7 DOWNTO 0);
+   SIGNAL TX_START : STD_LOGIC := '0';
+   SIGNAL TX_IDLE : STD_LOGIC;
+   TYPE SIO_ARB_TYPE IS (
+   PENDING,
+   DETECT,
+   MASTER,
+   NOT_FOUND
+   );
+   SIGNAL SIO_ARB : SIO_ARB_TYPE := PENDING;
 
    TYPE LPC_STATE_MACHINE IS (
    WAIT_START,
@@ -158,9 +181,11 @@ ARCHITECTURE Behavioral OF openxenium IS
 
    SIGNAL LPC_CURRENT_STATE : LPC_STATE_MACHINE := WAIT_START;
    SIGNAL CYCLE_TYPE : CYC_TYPE := IO_READ;
+   SIGNAL LPC_HAS_LFRAME : STD_LOGIC := '0';
    SIGNAL LPC_CYCLE_ACTIVE : STD_LOGIC;
    SIGNAL LPC_CYCLE_WRITE : STD_LOGIC;
    SIGNAL LPC_CYCLE_MEM : STD_LOGIC;
+   SIGNAL LPC_CYCLE_UART : STD_LOGIC;
    SIGNAL LPC_ADDRESS : STD_LOGIC_VECTOR (23 DOWNTO 0); -- LPC address width submitted on the bus is actually 32 bits, but we only need 24.
    SIGNAL LPC_BUFFER : STD_LOGIC_VECTOR (7 DOWNTO 0); -- Generic byte buffer
 
@@ -171,6 +196,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    CONSTANT XENIUM_00ED : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00ED"; -- QPI Bitbang Data Register (Available when RECOVER pin remains active low)
    CONSTANT XENIUM_00EE : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EE"; -- RGB LED Control Register
    CONSTANT XENIUM_00EF : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EF"; -- SPI Bitbang and Banking Control Register
+   CONSTANT XENIUM_03F8 : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"03F8"; -- UART to FTDI @ 3 megabaud via 96MHz DCM
    CONSTANT REG_00EE_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"55"; -- Genuine Xenium
    SIGNAL REG_00EC : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"00"; -- X,X,X,X,IN,CLK,CS,BBIO
    SIGNAL REG_00ED : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"00"; -- IN[7:4],OUT[3:0]
@@ -192,7 +218,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    CONSTANT QPI_INST_ERASE_32K : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"52"; -- 32KiB Block Erase (W25Q128JV-DTR Rev C section 8.2.19)
    CONSTANT QPI_INST_ERASE_64K : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"D8"; -- 64KiB Block Erase (W25Q128JV-DTR Rev C section 8.2.20)
    SIGNAL QPI_BUFFER : STD_LOGIC_VECTOR (11 DOWNTO 0) := (OTHERS => '0'); -- 12-bit shift register (4-bit output)
-   SIGNAL QPI_CHIP : STD_LOGIC_VECTOR (1 DOWNTO 0) := "00"; -- Chip Selection (when BANK[3:0] = "11XX")
+   SIGNAL QPI_CHIP : STD_LOGIC_VECTOR (1 DOWNTO 0) := "00"; -- Chip Selector (when BANK[3:0] = "11XX")
    TYPE QPI_EN_TYPE IS (
    QPI_EN_OFF,
    QPI_EN_OUT,
@@ -392,6 +418,14 @@ BEGIN
       CLKIN_IBUFG_OUT => CLK33,
       CLK0_OUT => OPEN
    );
+   UART_TX_INST : uart_tx PORT MAP (
+      TX_CLK => TX_CLK,
+      TX_BYTE => TX_BYTE,
+      TX_START => TX_START,
+      TX_IDLE => TX_IDLE,
+      TX => FTDI_RXD
+   );
+   TX_CLK <= CTR96(4); -- 3 megabaud
 
    HEADER_CS <= REG_00EF_WRITE(5);
    HEADER_SCK <= REG_00EF_WRITE(6);
@@ -423,7 +457,8 @@ BEGIN
    --LAD lines can be either input or output
    --The output values depend on variable states of the LPC transaction
    --Refer to the Intel LPC Specification Rev 1.1
-   LPC_LAD <= "0000" WHEN LPC_CURRENT_STATE = SYNC_COMPLETE ELSE
+   LPC_LAD <= "ZZZZ" WHEN LPC_CYCLE_UART = '1' AND (SIO_ARB = DETECT OR SIO_ARB = MASTER) ELSE
+              "0000" WHEN LPC_CURRENT_STATE = SYNC_COMPLETE ELSE
               "0101" WHEN LPC_CURRENT_STATE = SYNCING ELSE
               "1111" WHEN LPC_CURRENT_STATE = TAR2 ELSE
               "1111" WHEN LPC_CURRENT_STATE = TAR_EXIT ELSE
@@ -437,6 +472,8 @@ BEGIN
                       '0';
    LPC_CYCLE_MEM <= '1' WHEN CYCLE_TYPE = MEM_READ OR CYCLE_TYPE = MEM_WRITE ELSE
                     '0';
+   LPC_CYCLE_UART <= '1' WHEN LPC_CYCLE_ACTIVE = '1' AND LPC_CYCLE_MEM = '0' AND LPC_ADDRESS(15 DOWNTO 3) = XENIUM_03F8(15 DOWNTO 3) ELSE
+                     '0';
 
    --The D0 pad has the following behaviour:
    ---Held low on boot to ensure the Xbox boots from the LPC bus, then released after a few memory reads.
@@ -467,7 +504,7 @@ PROCESS (CLK33) BEGIN
       CTR33 <= CTR33 + 1;
    END IF;
 END PROCESS;
-PROCESS (CLK33, LPC_RST) BEGIN
+PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
    IF LPC_RST = '0' AND QPI_EN_INIT_LATCH = '1' THEN
       --LPC_RST goes low during boot up or hard reset.
       --Hold D0 low to boot from the LPC bus, only if not booting from TSOP.
@@ -484,6 +521,8 @@ PROCESS (CLK33, LPC_RST) BEGIN
       QPI_BUSY <= '0';
       QPI_BUSY_TOGGLE <= '0';
       QPI_EN <= QPI_EN_OFF;
+      SIO_ARB <= PENDING;
+      LPC_HAS_LFRAME <= '0';
       CYCLE_TYPE <= IO_READ;
       LPC_CURRENT_STATE <= WAIT_START;
    ELSIF rising_edge(CLK33) THEN
@@ -492,6 +531,17 @@ PROCESS (CLK33, LPC_RST) BEGIN
       ELSE
          QPI_BUFFER <= QPI_BUFFER(7 DOWNTO 0) & "0000";
       END IF;
+      IF QPI_EN_INIT_LATCH = '1' AND LPC_LFRAME = '0' THEN
+         IF QPI_LPC_MUTEX = '0' AND REG_00EC(0) = '0' THEN
+            QPI_EN <= QPI_EN_OFF;
+         END IF;
+         IF SIO_ARB = DETECT THEN
+            SIO_ARB <= NOT_FOUND; -- SuperIO on LPC bus not found by host.
+         END IF;
+         LPC_HAS_LFRAME <= '1';
+         CYCLE_TYPE <= IO_READ;
+         LPC_CURRENT_STATE <= WAIT_START;
+      ELSE
       CASE LPC_CURRENT_STATE IS
       WHEN WAIT_START =>
          CYCLE_TYPE <= IO_READ;
@@ -524,6 +574,10 @@ PROCESS (CLK33, LPC_RST) BEGIN
             LPC_CURRENT_STATE <= CYCTYPE_DIR;
          END IF;
       WHEN CYCTYPE_DIR =>
+         LPC_ADDRESS <= (OTHERS => '0');
+         IF SIO_ARB = DETECT THEN
+            SIO_ARB <= MASTER; -- SuperIO on LPC bus replied before a bus abort from the host.
+         END IF;
          IF LPC_LAD(3 DOWNTO 1) = "000" THEN
             CYCLE_TYPE <= IO_READ;
             COUNT <= 3;
@@ -658,7 +712,15 @@ PROCESS (CLK33, LPC_RST) BEGIN
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
                LPC_CURRENT_STATE <= WRITE_DATA0;
             ELSIF LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3 DOWNTO 1) = XENIUM_00EE(15 DOWNTO 1) OR
-                  (LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3 DOWNTO 2) = XENIUM_00EC(15 DOWNTO 2) AND (REG_00EC(0) = '1' OR SWITCH_RECOVER = '0')) THEN
+                 (LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3 DOWNTO 2) = XENIUM_00EC(15 DOWNTO 2) AND (REG_00EC(0) = '1' OR SWITCH_RECOVER = '0')) OR
+                  LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3) = XENIUM_03F8(15 DOWNTO 3) THEN
+               IF LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3) = XENIUM_03F8(15 DOWNTO 3) THEN
+                  IF SIO_ARB = PENDING AND LPC_HAS_LFRAME = '1' THEN
+                     SIO_ARB <= DETECT;
+                  ELSE
+                     SIO_ARB <= NOT_FOUND;
+                  END IF;
+               END IF;
                IF LPC_CYCLE_WRITE = '0' THEN
                   LPC_CURRENT_STATE <= TAR1;
                ELSE
@@ -737,8 +799,10 @@ PROCESS (CLK33, LPC_RST) BEGIN
                   ELSE
                      LPC_BUFFER <= REG_00EF_READ;
                   END IF;
+               WHEN XENIUM_03F8(15 DOWNTO 3) & o"5" => --x"03FD"
+                  LPC_BUFFER <= "00" & TX_IDLE & '0' & x"0"; -- LSR: THRE (bit 5)
                WHEN OTHERS =>
-                  LPC_BUFFER <= REG_00EE_READ;
+                  LPC_BUFFER <= x"00";
                END CASE;
                LPC_CURRENT_STATE <= SYNC_COMPLETE;
             ELSIF CYCLE_TYPE = IO_WRITE THEN
@@ -786,6 +850,11 @@ PROCESS (CLK33, LPC_RST) BEGIN
                      ELSE
                         REG_00EF_WRITE(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
                      END IF;
+                  END IF;
+               WHEN XENIUM_03F8 =>
+                  IF TX_START = '0' AND TX_IDLE = '1' THEN
+                     TX_START <= '1';
+                     TX_BYTE <= LPC_BUFFER;
                   END IF;
                WHEN OTHERS =>
                END CASE;
@@ -884,6 +953,9 @@ PROCESS (CLK33, LPC_RST) BEGIN
          IF QPI_BUSY = '1' THEN
             SDP_WRITE <= SDP_WRITE_OFF;
          END IF;
+         IF TX_START = '1' THEN
+            TX_START <= '0';
+         END IF;
          IF LPC_CYCLE_WRITE = '0' THEN
             LPC_CURRENT_STATE <= READ_DATA0;
          ELSE
@@ -900,6 +972,7 @@ PROCESS (CLK33, LPC_RST) BEGIN
          END IF;
          LPC_CURRENT_STATE <= WAIT_START;
       END CASE;
+      END IF;
       IF ERASE_END = '1' THEN
          ERASE_END_ITER <= ERASE_END_ITER - 1;
          CASE ERASE_END_CURRENT_STATE IS
