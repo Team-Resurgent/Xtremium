@@ -149,13 +149,14 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL TX_BYTE : STD_LOGIC_VECTOR (7 DOWNTO 0);
    SIGNAL TX_START : STD_LOGIC := '0';
    SIGNAL TX_IDLE : STD_LOGIC;
-   TYPE SIO_ARB_TYPE IS (
+
+   TYPE BUS_ARB_TYPE IS (
    PENDING,
    DETECT,
    MASTER,
    NOT_FOUND
    );
-   SIGNAL SIO_ARB : SIO_ARB_TYPE := PENDING;
+   SIGNAL LPC_SIO_UART_ARB : BUS_ARB_TYPE := PENDING;
 
    TYPE LPC_STATE_MACHINE IS (
    WAIT_START,
@@ -457,7 +458,7 @@ BEGIN
    --LAD lines can be either input or output
    --The output values depend on variable states of the LPC transaction
    --Refer to the Intel LPC Specification Rev 1.1
-   LPC_LAD <= "ZZZZ" WHEN LPC_CYCLE_UART = '1' AND (SIO_ARB = DETECT OR SIO_ARB = MASTER) ELSE
+   LPC_LAD <= "ZZZZ" WHEN LPC_CYCLE_UART = '1' AND (LPC_SIO_UART_ARB = DETECT OR LPC_SIO_UART_ARB = MASTER) ELSE
               "0000" WHEN LPC_CURRENT_STATE = SYNC_COMPLETE ELSE
               "0101" WHEN LPC_CURRENT_STATE = SYNCING ELSE
               "1111" WHEN LPC_CURRENT_STATE = TAR2 ELSE
@@ -521,8 +522,8 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
       QPI_BUSY <= '0';
       QPI_BUSY_TOGGLE <= '0';
       QPI_EN <= QPI_EN_OFF;
-      SIO_ARB <= PENDING;
-      LPC_HAS_LFRAME <= '0';
+      LPC_HAS_LFRAME <= LPC_LFRAME;
+      LPC_SIO_UART_ARB <= PENDING;
       CYCLE_TYPE <= IO_READ;
       LPC_CURRENT_STATE <= WAIT_START;
    ELSIF rising_edge(CLK33) THEN
@@ -531,15 +532,8 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
       ELSE
          QPI_BUFFER <= QPI_BUFFER(7 DOWNTO 0) & "0000";
       END IF;
-      IF QPI_EN_INIT_LATCH = '1' AND LPC_LFRAME = '0' THEN
-         IF QPI_LPC_MUTEX = '0' AND REG_00EC(0) = '0' THEN
-            QPI_EN <= QPI_EN_OFF;
-         END IF;
-         IF SIO_ARB = DETECT THEN
-            SIO_ARB <= NOT_FOUND; -- SuperIO on LPC bus not found by host.
-         END IF;
-         LPC_HAS_LFRAME <= '1';
-         CYCLE_TYPE <= IO_READ;
+      IF LPC_SIO_UART_ARB = DETECT AND QPI_EN_INIT_LATCH = '1' AND LPC_CYCLE_UART = '1' AND LPC_LFRAME = '0' AND LPC_LAD = "1111" THEN
+         LPC_SIO_UART_ARB <= NOT_FOUND; -- SuperIO on LPC bus not found by host & we become bus master for UART cycles.
          LPC_CURRENT_STATE <= WAIT_START;
       ELSE
       CASE LPC_CURRENT_STATE IS
@@ -575,8 +569,8 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
          END IF;
       WHEN CYCTYPE_DIR =>
          LPC_ADDRESS <= (OTHERS => '0');
-         IF SIO_ARB = DETECT THEN
-            SIO_ARB <= MASTER; -- SuperIO on LPC bus replied before a bus abort from the host.
+         IF LPC_SIO_UART_ARB = DETECT THEN
+            LPC_SIO_UART_ARB <= MASTER; -- SuperIO on LPC bus replied before a bus abort from host & is bus master for UART cycles.
          END IF;
          IF LPC_LAD(3 DOWNTO 1) = "000" THEN
             CYCLE_TYPE <= IO_READ;
@@ -714,11 +708,11 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
             ELSIF LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3 DOWNTO 1) = XENIUM_00EE(15 DOWNTO 1) OR
                  (LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3 DOWNTO 2) = XENIUM_00EC(15 DOWNTO 2) AND (REG_00EC(0) = '1' OR SWITCH_RECOVER = '0')) OR
                   LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3) = XENIUM_03F8(15 DOWNTO 3) THEN
-               IF LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3) = XENIUM_03F8(15 DOWNTO 3) THEN
-                  IF SIO_ARB = PENDING AND LPC_HAS_LFRAME = '1' THEN
-                     SIO_ARB <= DETECT;
+               IF LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3) = XENIUM_03F8(15 DOWNTO 3) AND LPC_SIO_UART_ARB = PENDING THEN
+                  IF LPC_HAS_LFRAME = '1' THEN
+                     LPC_SIO_UART_ARB <= DETECT; -- Listen for an LPC bus abort from host for us to become bus master for UART cycles.
                   ELSE
-                     SIO_ARB <= NOT_FOUND;
+                     LPC_SIO_UART_ARB <= NOT_FOUND; -- We are bus master for UART cycles.
                   END IF;
                END IF;
                IF LPC_CYCLE_WRITE = '0' THEN
