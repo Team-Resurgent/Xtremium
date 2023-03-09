@@ -460,7 +460,7 @@ BEGIN
    --LAD lines can be either input or output
    --The output values depend on variable states of the LPC transaction
    --Refer to the Intel LPC Specification Rev 1.1
-   LPC_LAD <= "ZZZZ" WHEN LPC_CYCLE_UART = '1' AND (LPC_SIO_UART_ARB = DETECT OR LPC_SIO_UART_ARB = MASTER) ELSE
+   LPC_LAD <= "ZZZZ" WHEN LPC_CYCLE_UART = '1' AND LPC_SIO_UART_ARB /= NOT_FOUND ELSE
               "0000" WHEN LPC_CURRENT_STATE = SYNC_COMPLETE ELSE
               "0101" WHEN LPC_CURRENT_STATE = SYNCING ELSE
               "1111" WHEN LPC_CURRENT_STATE = TAR2 ELSE
@@ -721,11 +721,11 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
                LPC_CURRENT_STATE <= WRITE_DATA0;
             ELSIF LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3 DOWNTO 1) = XENIUM_00EE(15 DOWNTO 1) OR
                  (LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3 DOWNTO 2) = XENIUM_00EC(15 DOWNTO 2) AND (REG_00EC(0) = '1' OR SWITCH_RECOVER = '0')) OR
-                 (LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3) = XENIUM_03F8(15 DOWNTO 3) AND LPC_HAS_LFRAME /= PENDING) THEN
+                  LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3) = XENIUM_03F8(15 DOWNTO 3) THEN
                IF LPC_ADDRESS(15 DOWNTO 4) & LPC_LAD(3) = XENIUM_03F8(15 DOWNTO 3) AND LPC_SIO_UART_ARB = PENDING THEN
                   IF LPC_HAS_LFRAME = YES THEN
                      LPC_SIO_UART_ARB <= DETECT; -- Listen for an LPC bus abort from host for us to become bus master for UART cycles.
-                  ELSE
+                  ELSIF LPC_HAS_LFRAME = NO THEN
                      LPC_SIO_UART_ARB <= NOT_FOUND; -- We are bus master for UART cycles.
                   END IF;
                END IF;
