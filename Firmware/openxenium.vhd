@@ -104,7 +104,8 @@ ENTITY openxenium IS
       LPC_RST : IN STD_LOGIC;
       LPC_LFRAME : IN STD_LOGIC;
 
-      FTDI_RXD : OUT STD_LOGIC;
+      FTDI_RXD : OUT STD_LOGIC; -- UART TX
+      FTDI_TXD : OUT STD_LOGIC; -- UART RX -- FIXME should be IN
 
       SWITCH_RECOVER : IN STD_LOGIC -- RECOVER pin is active low and requires an external pull-up resistor to 3.3V.
    );
@@ -189,7 +190,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL LPC_CYCLE_WRITE : STD_LOGIC;
    SIGNAL LPC_CYCLE_MEM : STD_LOGIC;
    SIGNAL LPC_CYCLE_UART : STD_LOGIC;
-   SIGNAL LPC_ADDRESS : STD_LOGIC_VECTOR (23 DOWNTO 0); -- LPC address width submitted on the bus is actually 32 bits, but we only need 24.
+   SIGNAL LPC_ADDRESS : STD_LOGIC_VECTOR (31 DOWNTO 0); -- LPC address width is 32 bits
    SIGNAL LPC_BUFFER : STD_LOGIC_VECTOR (7 DOWNTO 0); -- Generic byte buffer
 
    --IO READ/WRITE REGISTERS VISIBLE TO THE LPC BUS
@@ -428,6 +429,7 @@ BEGIN
       TX_IDLE => TX_IDLE,
       TX => FTDI_RXD
    );
+   FTDI_TXD <= '0'; -- TODO recv
    TX_CLK <= CTR96(4); -- 3 megabaud
 
    HEADER_CS <= REG_00EF_WRITE(5);
@@ -507,7 +509,7 @@ PROCESS (CLK33) BEGIN
       CTR33 <= CTR33 + 1;
    END IF;
 END PROCESS;
-PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
+PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
    IF LPC_RST = '0' AND QPI_EN_INIT_LATCH = '1' THEN
       --LPC_RST goes low during boot up or hard reset.
       --Hold D0 low to boot from the LPC bus, only if not booting from TSOP.
@@ -582,10 +584,10 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
             LPC_CURRENT_STATE <= CYCTYPE_DIR;
          END IF;
       WHEN CYCTYPE_DIR =>
-         LPC_ADDRESS <= (OTHERS => '0');
          IF LPC_SIO_UART_ARB = DETECT THEN
             LPC_SIO_UART_ARB <= PRESENT; -- SuperIO is present on LPC bus as bus master & replied before a bus abort from host.
          END IF;
+         LPC_ADDRESS <= (OTHERS => '0');
          IF LPC_LAD(3 DOWNTO 1) = "000" THEN
             CYCLE_TYPE <= IO_READ;
             COUNT <= 3;
@@ -614,6 +616,23 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
       --ADDRESS GATHERING
       WHEN ADDRESS =>
          COUNT <= COUNT - 1;
+         IF COUNT = 7 THEN
+            LPC_ADDRESS(31 DOWNTO 28) <= LPC_LAD;
+         ELSIF COUNT = 6 THEN
+            LPC_ADDRESS(27 DOWNTO 24) <= LPC_LAD;
+         ELSIF COUNT = 5 THEN
+            LPC_ADDRESS(23 DOWNTO 20) <= LPC_LAD;
+         ELSIF COUNT = 4 THEN
+            LPC_ADDRESS(19 DOWNTO 16) <= LPC_LAD;
+         ELSIF COUNT = 3 THEN
+            LPC_ADDRESS(15 DOWNTO 12) <= LPC_LAD;
+         ELSIF COUNT = 2 THEN
+            LPC_ADDRESS(11 DOWNTO 8) <= LPC_LAD;
+         ELSIF COUNT = 1 THEN
+            LPC_ADDRESS(7 DOWNTO 4) <= LPC_LAD;
+         ELSIF COUNT = 0 THEN
+            LPC_ADDRESS(3 DOWNTO 0) <= LPC_LAD;
+         END IF;
          IF LPC_CYCLE_MEM = '1' AND (QPI_LPC_MUTEX = '1' OR REG_00EC(0) = '1') THEN
             IF COUNT = 0 THEN
                IF QPI_LPC_MUTEX = '1' AND CYCLE_TYPE = MEM_READ THEN
@@ -663,7 +682,6 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
             ELSE
                QPI_BUFFER(3 DOWNTO 0) <= x"2";
             END IF;
-            LPC_ADDRESS(23 DOWNTO 20) <= LPC_LAD;
          ELSIF COUNT = 4 THEN
             IF QPI_BUSY = '1' THEN
                QPI_EN <= QPI_EN_IN;
@@ -687,7 +705,6 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
             ELSE
                QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
             END IF;
-            LPC_ADDRESS(19 DOWNTO 16) <= LPC_LAD;
          ELSIF COUNT = 3 THEN
             IF LPC_CYCLE_MEM = '1' THEN
                IF QPI_BUSY = '1' THEN
@@ -695,7 +712,6 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
                END IF;
                QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
             END IF;
-            LPC_ADDRESS(15 DOWNTO 12) <= LPC_LAD;
          ELSIF COUNT = 2 THEN
             IF LPC_CYCLE_MEM = '1' THEN
                IF QPI_BUSY = '1' THEN
@@ -704,17 +720,14 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, TSOPBOOT) BEGIN
                END IF;
                QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
             END IF;
-            LPC_ADDRESS(11 DOWNTO 8) <= LPC_LAD;
          ELSIF COUNT = 1 THEN
             IF LPC_CYCLE_MEM = '1' THEN
                QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
             END IF;
-            LPC_ADDRESS(7 DOWNTO 4) <= LPC_LAD;
          ELSIF COUNT = 0 THEN
             IF LPC_CYCLE_MEM = '1' THEN
                QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
             END IF;
-            LPC_ADDRESS(3 DOWNTO 0) <= LPC_LAD;
             IF CYCLE_TYPE = MEM_READ THEN
                LPC_CURRENT_STATE <= TAR1;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
