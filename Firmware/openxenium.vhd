@@ -205,7 +205,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    CONSTANT REG_00EE_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"55"; -- Genuine Xenium
    SIGNAL REG_00EC : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"00"; -- X,X,X,X,IN,CLK,CS,BBIO
    SIGNAL REG_00ED : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"00"; -- IN[7:4],OUT[3:0]
-   SIGNAL REG_00EE_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"01"; -- X,X,X,X,X,B,G,R (Red is default LED colour on power-up)
+   SIGNAL REG_00EE_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"01"; -- NOACT,X,X,X,X,B,G,R (Red is default LED colour on power-up)
    SIGNAL REG_00EF_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"01"; -- X,SCK,CS,MOSI,BANK[3:0]
    SIGNAL REG_00EF_READ : STD_LOGIC_VECTOR (7 DOWNTO 0); -- RECOVER (Active Low),BUSY,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
    SIGNAL REG_03FF : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"7F"; -- UART Scratch Register
@@ -441,6 +441,7 @@ BEGIN
    MOSFET_LED_R <= '0' WHEN TSOPBOOT = '1' ELSE
                    REG_00EE_WRITE(0);
    MOSFET_LED_G <= '0' WHEN TSOPBOOT = '1' ELSE
+                   TX_START WHEN REG_00EE_WRITE(7) = '0' AND LPC_CYCLE_UART = '1' ELSE -- UART TX activity
                    REG_00EE_WRITE(1);
    MOSFET_LED_B <= '0' WHEN TSOPBOOT = '1' ELSE
                    REG_00EE_WRITE(2);
