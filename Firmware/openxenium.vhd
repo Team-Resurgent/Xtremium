@@ -186,6 +186,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    MEM_WRITE
    );
    SIGNAL CYCLE_TYPE : CYC_TYPE := IO_READ;
+   SIGNAL LPC_CYCLE_ABORT : STD_LOGIC;
    SIGNAL LPC_CYCLE_ACTIVE : STD_LOGIC;
    SIGNAL LPC_CYCLE_WRITE : STD_LOGIC;
    SIGNAL LPC_CYCLE_MEM : STD_LOGIC;
@@ -207,6 +208,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL REG_00EE_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"01"; -- X,X,X,X,X,B,G,R (Red is default LED colour on power-up)
    SIGNAL REG_00EF_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"01"; -- X,SCK,CS,MOSI,BANK[3:0]
    SIGNAL REG_00EF_READ : STD_LOGIC_VECTOR (7 DOWNTO 0); -- RECOVER (Active Low),BUSY,MISO2 (Header Pin 4),MISO1 (Header Pin 1),BANK[3:0]
+   SIGNAL REG_03FF : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"7F"; -- UART Scratch Register
    SIGNAL SWITCH_RECOVER_LATCH : STD_LOGIC := '0';
 
    --QPI READ/WRITE REGISTERS FOR FLASH MEMORY
@@ -471,6 +473,8 @@ BEGIN
               LPC_BUFFER(7 DOWNTO 4) WHEN LPC_CURRENT_STATE = READ_DATA1 ELSE
               "ZZZZ";
 
+   LPC_CYCLE_ABORT <= '1' WHEN LPC_LFRAME = '0' AND LPC_LAD = "1111" ELSE
+                      '0';
    LPC_CYCLE_ACTIVE <= '1' WHEN LPC_CURRENT_STATE /= WAIT_START AND LPC_CURRENT_STATE /= CYCTYPE_DIR ELSE
                        '0';
    LPC_CYCLE_WRITE <= '1' WHEN CYCLE_TYPE = IO_WRITE OR CYCLE_TYPE = MEM_WRITE ELSE
@@ -540,7 +544,7 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
       ELSE
          QPI_BUFFER <= QPI_BUFFER(7 DOWNTO 0) & "0000";
       END IF;
-      IF QPI_EN_INIT_LATCH = '1' AND LPC_SIO_UART_ARB = DETECT AND LPC_CYCLE_UART = '1' AND LPC_LFRAME = '0' AND LPC_LAD = "1111" THEN
+      IF QPI_EN_INIT_LATCH = '1' AND LPC_SIO_UART_ARB = DETECT AND LPC_CYCLE_UART = '1' AND LPC_CYCLE_ABORT = '1' THEN
          LPC_SIO_UART_ARB <= ACQUIRED; -- SuperIO on LPC bus not found by host & we acquire bus master for UART cycles.
          LPC_CURRENT_STATE <= WAIT_START;
       ELSE
@@ -822,6 +826,8 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                   END IF;
                WHEN XENIUM_03F8(15 DOWNTO 3) & o"5" => --x"03FD"
                   LPC_BUFFER <= "00" & TX_IDLE & '0' & x"0"; -- LSR: THRE (bit 5)
+               WHEN XENIUM_03F8(15 DOWNTO 3) & o"7" => --x"03FF"
+                  LPC_BUFFER <= REG_03FF; -- SCR
                WHEN OTHERS =>
                   LPC_BUFFER <= x"00";
                END CASE;
@@ -872,11 +878,13 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                         REG_00EF_WRITE(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
                      END IF;
                   END IF;
-               WHEN XENIUM_03F8 =>
+               WHEN XENIUM_03F8(15 DOWNTO 3) & o"0" => --x"03F8"
                   IF TX_START = '0' AND TX_IDLE = '1' THEN
                      TX_START <= '1';
-                     TX_BYTE <= LPC_BUFFER;
+                     TX_BYTE <= LPC_BUFFER; -- THR
                   END IF;
+               WHEN XENIUM_03F8(15 DOWNTO 3) & o"7" => --x"03FF"
+                  REG_03FF <= LPC_BUFFER; -- SCR
                WHEN OTHERS =>
                END CASE;
                LPC_CURRENT_STATE <= SYNC_COMPLETE;
