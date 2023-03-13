@@ -226,14 +226,14 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL QPI_BUFFER : STD_LOGIC_VECTOR (11 DOWNTO 0) := (OTHERS => '0'); -- 12-bit shift register (4-bit output)
    SIGNAL QPI_CHIP : STD_LOGIC_VECTOR (1 DOWNTO 0) := "00"; -- Chip Selector (when BANK[3:0] = "11XX")
    TYPE QPI_EN_TYPE IS (
-   QPI_EN_OFF,
-   QPI_EN_OUT,
-   QPI_EN_IN,
-   QPI_EN_INIT
+   OFF,
+   OUTPUT,
+   OUTPUT_SPI,
+   INPUT
    );
-   SIGNAL QPI_EN : QPI_EN_TYPE := QPI_EN_OFF;
-   SIGNAL QPI_EN_INIT_AGAIN : STD_LOGIC := '0';
-   SIGNAL QPI_EN_INIT_LATCH : STD_LOGIC := '0';
+   SIGNAL QPI_EN : QPI_EN_TYPE := OFF;
+   SIGNAL QPI_INIT_AGAIN : STD_LOGIC := '0';
+   SIGNAL QPI_INIT_LATCH : STD_LOGIC := '0';
    SIGNAL QPI_BUSY : STD_LOGIC := '0';
    SIGNAL QPI_BUSY_TOGGLE : STD_LOGIC := '0';
    SIGNAL QPI_LPC_MUTEX : STD_LOGIC; -- If set, another FSM other than the LPC FSM is taking over the QPI bus.
@@ -369,18 +369,18 @@ ARCHITECTURE Behavioral OF openxenium IS
    16#7F# => x"00"  -- FEh
    );
    TYPE SDP_READ_TYPE IS (
-   SDP_READ_OFF,
-   SDP_READ_ID,
-   SDP_READ_CFI,
-   SDP_READ_TSC
+   OFF,
+   ID,
+   CFI,
+   TSC
    );
-   SIGNAL SDP_READ : SDP_READ_TYPE := SDP_READ_OFF;
+   SIGNAL SDP_READ : SDP_READ_TYPE := OFF;
    TYPE SDP_WRITE_TYPE IS (
-   SDP_WRITE_OFF,
-   SDP_WRITE_EN,
-   SDP_WRITE_ERASE
+   OFF,
+   BYTE,
+   ERASE
    );
-   SIGNAL SDP_WRITE : SDP_WRITE_TYPE := SDP_WRITE_OFF;
+   SIGNAL SDP_WRITE : SDP_WRITE_TYPE := OFF;
    SIGNAL SDP_COUNT : INTEGER RANGE 0 TO 4 := 0;
    SIGNAL ERASE_END : STD_LOGIC := '0';
    TYPE ERASE_END_STATE_MACHINE IS (
@@ -446,18 +446,18 @@ BEGIN
    MOSFET_LED_B <= '0' WHEN TSOPBOOT = '1' ELSE
                    REG_00EE_WRITE(2);
 
-   QPI_IO <= REG_00ED(3 DOWNTO 0) WHEN QPI_EN = QPI_EN_OUT AND REG_00EC(0) = '1' ELSE
-             QPI_BUFFER(11 DOWNTO 8) WHEN QPI_EN = QPI_EN_OUT ELSE
-             "ZZZ" & QPI_BUFFER(11) WHEN QPI_EN = QPI_EN_INIT ELSE
+   QPI_IO <= REG_00ED(3 DOWNTO 0) WHEN QPI_EN = OUTPUT AND REG_00EC(0) = '1' ELSE
+             QPI_BUFFER(11 DOWNTO 8) WHEN QPI_EN = OUTPUT ELSE
+             "ZZZ" & QPI_BUFFER(11) WHEN QPI_EN = OUTPUT_SPI ELSE
              "ZZZZ";
-   QPI_CS <= "0000" WHEN QPI_EN = QPI_EN_INIT ELSE
-             "1111" WHEN QPI_EN = QPI_EN_OFF ELSE
+   QPI_CS <= "0000" WHEN QPI_EN = OUTPUT_SPI AND QPI_INIT_LATCH = '0' ELSE
+             "1111" WHEN QPI_EN = OFF ELSE
              "0111" WHEN QPI_CHIP = "11" ELSE -- CS3 (when BANK[3:0] = x"F")
              "1011" WHEN QPI_CHIP = "10" ELSE -- U4/CS2 (when BANK[3:0] = x"E")
              "1101" WHEN QPI_CHIP = "01" ELSE -- U3/CS1 (when BANK[3:0] = x"D")
              "1110"; -- U2/CS0 (when BANK[3:0] = x"C")
    QPI_CLK <= REG_00EC(2) WHEN REG_00EC(0) = '1' ELSE
-              '0' WHEN QPI_EN = QPI_EN_OFF ELSE NOT CLK33; -- SPI Mode 0
+              '0' WHEN QPI_EN = OFF ELSE NOT CLK33; -- SPI Mode 0
 
    QPI_LPC_MUTEX <= '1' WHEN ERASE_END = '1' ELSE
                     '0';
@@ -514,15 +514,15 @@ PROCESS (CLK33) BEGIN
       CTR33 <= CTR33 + 1;
    END IF;
 END PROCESS;
-PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
-   IF LPC_RST = '0' AND QPI_EN_INIT_LATCH = '1' THEN
+PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
+   IF LPC_RST = '0' AND QPI_INIT_LATCH = '1' THEN
       --LPC_RST goes low during boot up or hard reset.
       --Hold D0 low to boot from the LPC bus, only if not booting from TSOP.
       D0LEVEL <= TSOPBOOT;
       --Assert the A20M# pin on the CPU, only if not booting from TSOP.
       A20MLEVEL <= TSOPBOOT;
-      SDP_READ <= SDP_READ_OFF;
-      SDP_WRITE <= SDP_WRITE_OFF;
+      SDP_READ <= OFF;
+      SDP_WRITE <= OFF;
       SDP_COUNT <= 0;
       ERASE_END <= '0';
       ERASE_END_CURRENT_STATE <= START;
@@ -530,7 +530,7 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
       REG_00ED <= x"00";
       QPI_BUSY <= '0';
       QPI_BUSY_TOGGLE <= '0';
-      QPI_EN <= QPI_EN_OFF;
+      QPI_EN <= OFF;
       IF LPC_LFRAME = '1' THEN
          LPC_HAS_LFRAME <= PENDING;
       ELSE
@@ -540,16 +540,16 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
       CYCLE_TYPE <= IO_READ;
       LPC_CURRENT_STATE <= WAIT_START;
    ELSIF rising_edge(CLK33) THEN
-      IF QPI_EN_INIT_LATCH = '0' THEN
+      IF QPI_EN = OUTPUT_SPI THEN
          QPI_BUFFER <= QPI_BUFFER(10 DOWNTO 0) & '0';
       ELSE
          QPI_BUFFER <= QPI_BUFFER(7 DOWNTO 0) & "0000";
       END IF;
-      IF QPI_EN_INIT_LATCH = '1' AND LPC_SIO_UART_ARB = DETECT AND LPC_CYCLE_UART = '1' AND LPC_CYCLE_ABORT = '1' THEN
+      IF QPI_INIT_LATCH = '1' AND LPC_SIO_UART_ARB = DETECT AND LPC_CYCLE_UART = '1' AND LPC_CYCLE_ABORT = '1' THEN
          LPC_SIO_UART_ARB <= ACQUIRED; -- SuperIO on LPC bus not found by host & we acquire bus master for UART cycles.
          LPC_CURRENT_STATE <= WAIT_START;
       ELSE
-      IF QPI_EN_INIT_LATCH = '1' AND LPC_HAS_LFRAME = PENDING AND LPC_CYCLE_MEM = '1' THEN
+      IF QPI_INIT_LATCH = '1' AND LPC_HAS_LFRAME = PENDING AND LPC_CYCLE_MEM = '1' THEN
          -- Detect if LFRAME is bridged to the D0 pad & is not driven by host.
          IF LPC_LFRAME = '1' THEN
             LPC_HAS_LFRAME <= YES;
@@ -560,19 +560,19 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
       CASE LPC_CURRENT_STATE IS
       WHEN WAIT_START =>
          CYCLE_TYPE <= IO_READ;
-         IF QPI_EN_INIT_LATCH = '0' THEN
-            IF QPI_EN = QPI_EN_OFF THEN
-               QPI_EN <= QPI_EN_INIT;
+         IF QPI_INIT_LATCH = '0' THEN
+            IF QPI_EN = OFF THEN
+               QPI_EN <= OUTPUT_SPI;
                QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_INIT;
                COUNT <= 7;
             ELSE
                IF COUNT = 0 THEN
-                  QPI_EN <= QPI_EN_OFF;
-                  IF QPI_EN_INIT_AGAIN = '0' THEN
-                     QPI_EN_INIT_AGAIN <= '1';
+                  QPI_EN <= OFF;
+                  IF QPI_INIT_AGAIN = '0' THEN
+                     QPI_INIT_AGAIN <= '1';
                   ELSE
-                     QPI_EN_INIT_AGAIN <= '0';
-                     QPI_EN_INIT_LATCH <= '1';
+                     QPI_INIT_AGAIN <= '0';
+                     QPI_INIT_LATCH <= '1';
                      -- Set RECOVER bank on power-up if switch is activated.
                      IF SWITCH_RECOVER_LATCH = '0' THEN
                         SWITCH_RECOVER_LATCH <= '1';
@@ -610,9 +610,9 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
             CYCLE_TYPE <= MEM_WRITE;
             COUNT <= 7;
             LPC_CURRENT_STATE <= ADDRESS;
-            IF SDP_WRITE /= SDP_WRITE_OFF THEN
+            IF SDP_WRITE /= OFF THEN
                QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_WR_EN;
-               QPI_EN <= QPI_EN_OUT;
+               QPI_EN <= OUTPUT;
             END IF;
          ELSE
             LPC_CURRENT_STATE <= WAIT_START; -- Unsupported, reset state machine.
@@ -647,14 +647,14 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                END IF;
             END IF;
          ELSIF COUNT = 6 THEN
-            IF SDP_WRITE /= SDP_WRITE_OFF THEN
-               QPI_EN <= QPI_EN_OFF;
+            IF SDP_WRITE /= OFF THEN
+               QPI_EN <= OFF;
             END IF;
             IF QPI_BUSY = '1' THEN
                QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_RSR1;
-               QPI_EN <= QPI_EN_OUT;
+               QPI_EN <= OUTPUT;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
-               IF SDP_WRITE = SDP_WRITE_ERASE THEN
+               IF SDP_WRITE = ERASE THEN
                   IF REG_00EF_WRITE(3 DOWNTO 0) = x"B" THEN
                      QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_ERASE_4K;
                   ELSE
@@ -667,8 +667,8 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_READ;
             END IF;
          ELSIF COUNT = 5 THEN
-            IF QPI_BUSY = '1' OR SDP_WRITE /= SDP_WRITE_OFF OR (SDP_READ = SDP_READ_OFF AND CYCLE_TYPE = MEM_READ) THEN
-               QPI_EN <= QPI_EN_OUT;
+            IF QPI_BUSY = '1' OR SDP_WRITE /= OFF OR (SDP_READ = OFF AND CYCLE_TYPE = MEM_READ) THEN
+               QPI_EN <= OUTPUT;
             END IF;
             --BANK SELECTION
             IF REG_00EF_WRITE(3 DOWNTO 0) = x"1" OR
@@ -689,7 +689,7 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
             END IF;
          ELSIF COUNT = 4 THEN
             IF QPI_BUSY = '1' THEN
-               QPI_EN <= QPI_EN_IN;
+               QPI_EN <= INPUT;
             END IF;
             --BANK SELECTION
             IF REG_00EF_WRITE(3 DOWNTO 0) = x"1" OR
@@ -721,7 +721,7 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
             IF LPC_CYCLE_MEM = '1' THEN
                IF QPI_BUSY = '1' THEN
                   LPC_BUFFER(3 DOWNTO 0) <= QPI_IO;
-                  QPI_EN <= QPI_EN_OFF;
+                  QPI_EN <= OFF;
                END IF;
                QPI_BUFFER(3 DOWNTO 0) <= LPC_LAD;
             END IF;
@@ -766,13 +766,13 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
          IF CYCLE_TYPE = MEM_WRITE AND QPI_LPC_MUTEX = '0' THEN
             QPI_BUFFER(7 DOWNTO 4) <= LPC_LAD;
             QPI_BUFFER(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
-            IF SDP_WRITE = SDP_WRITE_ERASE THEN
+            IF SDP_WRITE = ERASE THEN
                IF LPC_LAD & LPC_BUFFER(3 DOWNTO 0) /= SDP_ERASE_SECTOR_DATA THEN --x"30"
-                  SDP_WRITE <= SDP_WRITE_OFF;
-                  QPI_EN <= QPI_EN_OFF;
+                  SDP_WRITE <= OFF;
+                  QPI_EN <= OFF;
                ELSIF REG_00EF_WRITE(3 DOWNTO 0) = x"A" AND LPC_ADDRESS(17 DOWNTO 16) = "11" THEN
-                  SDP_WRITE <= SDP_WRITE_OFF;
-                  QPI_EN <= QPI_EN_OFF;
+                  SDP_WRITE <= OFF;
+                  QPI_EN <= OFF;
                   ERASE_END_SECTOR <= UNSIGNED(LPC_ADDRESS(15 DOWNTO 12));
                   ERASE_END <= '1';
                   QPI_BUSY <= '1';
@@ -789,12 +789,12 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
 
       --TURN BUS AROUND (HOST TO PERIPHERAL)
       WHEN TAR1 =>
-         IF CYCLE_TYPE = MEM_WRITE AND SDP_WRITE = SDP_WRITE_ERASE THEN
-            QPI_EN <= QPI_EN_OFF;
+         IF CYCLE_TYPE = MEM_WRITE AND SDP_WRITE = ERASE THEN
+            QPI_EN <= OFF;
          END IF;
          LPC_CURRENT_STATE <= TAR2;
       WHEN TAR2 =>
-         IF CYCLE_TYPE = MEM_READ AND SDP_READ = SDP_READ_TSC AND LPC_ADDRESS(2 DOWNTO 0) = o"0" THEN
+         IF CYCLE_TYPE = MEM_READ AND SDP_READ = TSC AND LPC_ADDRESS(2 DOWNTO 0) = o"0" THEN
             IF LPC_ADDRESS(3) = '0' THEN
                CTR <= CTR33; -- LPC
             ELSE
@@ -840,17 +840,17 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                      IF REG_00EC(0) = '1' AND LPC_BUFFER(0) = '0' THEN -- BBIO (off)
                         REG_00EC <= x"00";
                         REG_00ED <= x"00";
-                        QPI_EN <= QPI_EN_OFF;
+                        QPI_EN <= OFF;
                      ELSIF LPC_BUFFER(0) = '1' THEN -- BBIO
                         IF LPC_BUFFER(1) = '1' THEN -- CS
                            IF LPC_BUFFER(3) = '1' THEN -- IN
-                              QPI_EN <= QPI_EN_IN;
+                              QPI_EN <= INPUT;
                               REG_00ED(7 DOWNTO 4) <= QPI_IO;
                            ELSE
-                              QPI_EN <= QPI_EN_OUT;
+                              QPI_EN <= OUTPUT;
                            END IF;
                         ELSE
-                           QPI_EN <= QPI_EN_OFF;
+                           QPI_EN <= OFF;
                            REG_00ED(7 DOWNTO 4) <= QPI_IO;
                         END IF;
                         REG_00EC(3 DOWNTO 0) <= LPC_BUFFER(3 DOWNTO 0);
@@ -871,7 +871,7 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                      TSOPBOOT <= '1';
                   ELSIF QPI_LPC_MUTEX = '0' THEN
                      IF LPC_BUFFER(3 DOWNTO 2) = "11" THEN
-                        IF QPI_CHIP /= LPC_BUFFER(1 DOWNTO 0) AND SDP_READ = SDP_READ_OFF THEN
+                        IF QPI_CHIP /= LPC_BUFFER(1 DOWNTO 0) AND SDP_READ = OFF THEN
                            QPI_CHIP <= LPC_BUFFER(1 DOWNTO 0);
                            QPI_BUSY <= '1';
                         END IF;
@@ -903,47 +903,47 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                END IF;
                LPC_CURRENT_STATE <= SYNC_COMPLETE;
             ELSIF CYCLE_TYPE = MEM_READ THEN
-               IF SDP_READ = SDP_READ_ID THEN
+               IF SDP_READ = ID THEN
                   IF LPC_ADDRESS(1) = '0' THEN
                      LPC_BUFFER <= SDP_ID_VENDOR;
                   ELSE
                      LPC_BUFFER <= SDP_ID_DEVICE;
                   END IF;
                   LPC_CURRENT_STATE <= SYNC_COMPLETE;
-               ELSIF SDP_READ = SDP_READ_CFI THEN
+               ELSIF SDP_READ = CFI THEN
                   IF UNSIGNED(LPC_ADDRESS(7 DOWNTO 1)) < x"10" THEN
                      LPC_BUFFER <= x"FF";
                   ELSE
                      LPC_BUFFER <= SDP_CFI_ROM(TO_INTEGER(UNSIGNED(LPC_ADDRESS(7 DOWNTO 1)) - x"10"));
                   END IF;
                   LPC_CURRENT_STATE <= SYNC_COMPLETE;
-               ELSIF SDP_READ = SDP_READ_TSC THEN
+               ELSIF SDP_READ = TSC THEN
                   LPC_BUFFER <= STD_LOGIC_VECTOR(CTR_U8LE_MAP(TO_INTEGER(UNSIGNED(LPC_ADDRESS(2 DOWNTO 0)))));
                   LPC_CURRENT_STATE <= SYNC_COMPLETE;
                END IF;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
-               IF SDP_WRITE /= SDP_WRITE_OFF THEN
+               IF SDP_WRITE /= OFF THEN
                   QPI_BUSY <= '1';
-                  QPI_EN <= QPI_EN_OFF;
-               ELSIF SDP_READ /= SDP_READ_OFF THEN
+                  QPI_EN <= OFF;
+               ELSIF SDP_READ /= OFF THEN
                   IF LPC_BUFFER = SDP_RESET_DATA THEN --x"F0"
-                     SDP_READ <= SDP_READ_OFF;
+                     SDP_READ <= OFF;
                   END IF;
                ELSIF LPC_ADDRESS(7 DOWNTO 0) = SDP_TICK_ADDR(7 DOWNTO 0) AND LPC_BUFFER = SDP_CFI_DATA THEN --x"AA" AND x"98"
-                  SDP_READ <= SDP_READ_CFI;
+                  SDP_READ <= CFI;
                ELSIF LPC_ADDRESS(7 DOWNTO 0) = SDP_TICK_ADDR(7 DOWNTO 0) AND LPC_BUFFER = SDP_TSC_DATA THEN --x"AA" AND x"99"
-                  SDP_READ <= SDP_READ_TSC;
+                  SDP_READ <= TSC;
                ELSE
                   CASE LPC_ADDRESS(11 DOWNTO 0) IS
                   WHEN SDP_TICK_ADDR => --x"AAA"
                      IF (SDP_COUNT = 0 OR SDP_COUNT = 3) AND LPC_BUFFER = SDP_TICK_DATA THEN --x"AA"
                         SDP_COUNT <= SDP_COUNT + 1;
                      ELSIF SDP_COUNT = 2 AND LPC_BUFFER = SDP_ID_DATA THEN --x"90"
-                        SDP_READ <= SDP_READ_ID;
+                        SDP_READ <= ID;
                         SDP_COUNT <= 0;
                      ELSIF SDP_COUNT = 2 AND LPC_BUFFER = SDP_WRITE_DATA THEN --x"A0"
                         IF A20MLEVEL = '1' THEN
-                           SDP_WRITE <= SDP_WRITE_EN;
+                           SDP_WRITE <= BYTE;
                         END IF;
                         SDP_COUNT <= 0;
                      ELSIF SDP_COUNT = 2 AND LPC_BUFFER = SDP_ERASE_DATA THEN --x"80"
@@ -956,7 +956,7 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                         SDP_COUNT <= SDP_COUNT + 1;
                      ELSIF SDP_COUNT = 4 AND LPC_BUFFER = SDP_TOCK_DATA THEN --x"55"
                         IF A20MLEVEL = '1' THEN
-                           SDP_WRITE <= SDP_WRITE_ERASE;
+                           SDP_WRITE <= ERASE;
                         END IF;
                         SDP_COUNT <= 0;
                      ELSE
@@ -971,17 +971,17 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
          ELSIF COUNT = 3 AND CYCLE_TYPE /= MEM_READ THEN
             LPC_CURRENT_STATE <= SYNC_COMPLETE;
          ELSIF COUNT = 2 THEN
-            QPI_EN <= QPI_EN_IN;
+            QPI_EN <= INPUT;
          ELSIF COUNT = 1 THEN
             LPC_BUFFER(7 DOWNTO 4) <= QPI_IO;
          ELSIF COUNT = 0 THEN
             LPC_BUFFER(3 DOWNTO 0) <= QPI_IO;
-            QPI_EN <= QPI_EN_OFF;
+            QPI_EN <= OFF;
             LPC_CURRENT_STATE <= SYNC_COMPLETE;
          END IF;
       WHEN SYNC_COMPLETE =>
          IF QPI_BUSY = '1' THEN
-            SDP_WRITE <= SDP_WRITE_OFF;
+            SDP_WRITE <= OFF;
          END IF;
          IF TX_START = '1' THEN
             TX_START <= '0';
@@ -1030,16 +1030,16 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
          WHEN WR_EN =>
             IF ERASE_END_ITER = 2 THEN
                QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_WR_EN;
-               QPI_EN <= QPI_EN_OUT;
+               QPI_EN <= OUTPUT;
             ELSIF ERASE_END_ITER = 0 THEN
-               QPI_EN <= QPI_EN_OFF;
+               QPI_EN <= OFF;
                ERASE_END_ITER <= 8;
                ERASE_END_CURRENT_STATE <= ERASE;
             END IF;
          WHEN ERASE =>
             IF ERASE_END_ITER = 8 THEN
                QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_ERASE_4K;
-               QPI_EN <= QPI_EN_OUT;
+               QPI_EN <= OUTPUT;
             ELSIF ERASE_END_ITER = 7 THEN
                QPI_BUFFER(7 DOWNTO 0) <= x"1F";
             ELSIF ERASE_END_ITER = 6 THEN
@@ -1051,18 +1051,18 @@ PROCESS (CLK33, LPC_RST, QPI_EN_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
             ELSIF ERASE_END_ITER = 3 THEN
                QPI_BUFFER(3 DOWNTO 0) <= x"0";
             ELSIF ERASE_END_ITER = 0 THEN
-               QPI_EN <= QPI_EN_OFF;
+               QPI_EN <= OFF;
                ERASE_END_ITER <= 4;
                ERASE_END_CURRENT_STATE <= BUSY;
             END IF;
          WHEN BUSY =>
             IF ERASE_END_ITER = 4 THEN
                QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_RSR1;
-               QPI_EN <= QPI_EN_OUT;
+               QPI_EN <= OUTPUT;
             ELSIF ERASE_END_ITER = 2 THEN
-               QPI_EN <= QPI_EN_IN;
+               QPI_EN <= INPUT;
             ELSIF ERASE_END_ITER = 0 THEN
-               QPI_EN <= QPI_EN_OFF;
+               QPI_EN <= OFF;
                IF QPI_IO(0) = '1' THEN
                   ERASE_END_ITER <= 4;
                ELSE
