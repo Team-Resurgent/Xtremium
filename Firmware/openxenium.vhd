@@ -114,16 +114,23 @@ END openxenium;
 ARCHITECTURE Behavioral OF openxenium IS
    COMPONENT dcm33to96 IS
       PORT (
-         CLKIN_IN : IN STD_LOGIC;
-         CLKFX_OUT : OUT STD_LOGIC;
+         CLKIN_IN : IN STD_LOGIC; -- LPC input clock @ 33.3MHz
+         CLKFX_OUT : OUT STD_LOGIC; -- DCM output clock @ 96.96MHz
+         CLKFX180_OUT : OUT STD_LOGIC;
          CLKIN_IBUFG_OUT : OUT STD_LOGIC;
-         CLK0_OUT : OUT STD_LOGIC
+         CLK0_OUT : OUT STD_LOGIC;
+         LOCKED_OUT : OUT STD_LOGIC
       );
    END COMPONENT;
-   SIGNAL CLK33 : STD_LOGIC; -- LPC clock @ 33.3MHz
-   SIGNAL CLK96 : STD_LOGIC; -- dcm33to96 @ 96MHz
-   SIGNAL CTR33 : UNSIGNED (63 DOWNTO 0) := (OTHERS => '0'); -- Monotonic 64-bit TSC of LPC clock @ 33.3MHz
-   SIGNAL CTR96 : UNSIGNED (63 DOWNTO 0) := (OTHERS => '0'); -- Monotonic 64-bit TSC of dcm33to96 @ 96MHz
+   SIGNAL DCM_LOCKED : STD_LOGIC;
+   CONSTANT CLKFX_DIV : NATURAL := 99; -- DCM output clock period correction from 96.96MHz to 96MHz
+   SIGNAL CLKFX_CTR : INTEGER RANGE 0 TO CLKFX_DIV := 0;
+   SIGNAL CLKFX : STD_LOGIC;
+   SIGNAL CLKFX180 : STD_LOGIC;
+   SIGNAL CLK33 : STD_LOGIC;
+   SIGNAL CLK96 : STD_LOGIC := '0'; -- Corrected DCM output clock @ 96MHz
+   SIGNAL CTR33 : UNSIGNED (63 DOWNTO 0) := (OTHERS => '0'); -- Monotonic 64-bit TSC of LPC input clock @ 33.3MHz
+   SIGNAL CTR96 : UNSIGNED (63 DOWNTO 0) := (OTHERS => '0'); -- Monotonic 64-bit TSC of corrected DCM output clock @ 96MHz
    SIGNAL CTR : UNSIGNED (63 DOWNTO 0) := (OTHERS => '0');
    TYPE U64_U8_MAP_TYPE IS ARRAY (0 TO 7) OF UNSIGNED (7 DOWNTO 0);
    CONSTANT CTR_U8LE_MAP : U64_U8_MAP_TYPE := (
@@ -150,6 +157,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    SIGNAL TX_BYTE : STD_LOGIC_VECTOR (7 DOWNTO 0);
    SIGNAL TX_START : STD_LOGIC := '0';
    SIGNAL TX_IDLE : STD_LOGIC;
+   SIGNAL TX_READY : STD_LOGIC;
 
    TYPE BUS_ARB_TYPE IS (
    PENDING,
@@ -423,9 +431,11 @@ BEGIN
    --ASSIGN THE IO TO SIGNALS BASED ON REQUIRED BEHAVIOUR
    DCM33TO96_INST : dcm33to96 PORT MAP (
       CLKIN_IN => LPC_CLK,
-      CLKFX_OUT => CLK96,
+      CLKFX_OUT => CLKFX,
+      CLKFX180_OUT => CLKFX180,
       CLKIN_IBUFG_OUT => CLK33,
-      CLK0_OUT => OPEN
+      CLK0_OUT => OPEN,
+      LOCKED_OUT => DCM_LOCKED
    );
    UART_TX_INST : uart_tx PORT MAP (
       TX_CLK => TX_CLK,
@@ -436,6 +446,8 @@ BEGIN
    );
    FTDI_TXD <= '0'; -- TODO recv
    TX_CLK <= CTR96(4); -- 3 megabaud
+   TX_READY <= '1' WHEN TX_IDLE = '1' AND DCM_LOCKED = '1' ELSE
+               '0';
 
    HEADER_CS <= REG_00EF_WRITE(5);
    HEADER_SCK <= REG_00EF_WRITE(6);
@@ -507,9 +519,22 @@ BEGIN
 
    REG_00EF_READ <= SWITCH_RECOVER & QPI_BUSY & HEADER_MISO2 & HEADER_MISO1 & REG_00EF_WRITE(3 DOWNTO 0);
 
-PROCESS (CLK96) BEGIN
-   IF rising_edge(CLK96) THEN
-      CTR96 <= CTR96 + 1;
+PROCESS (CLKFX) BEGIN
+   IF rising_edge(CLKFX) THEN
+      IF CLKFX_CTR = CLKFX_DIV THEN
+         CLKFX_CTR <= 0;
+      ELSE
+         CLKFX_CTR <= CLKFX_CTR + 1;
+         CLK96 <= NOT CLK96;
+         CTR96 <= CTR96 + 1;
+      END IF;
+   END IF;
+END PROCESS;
+PROCESS (CLKFX180) BEGIN
+   IF rising_edge(CLKFX180) THEN
+      IF CLKFX_CTR /= CLKFX_DIV THEN
+         CLK96 <= NOT CLK96;
+      END IF;
    END IF;
 END PROCESS;
 PROCESS (CLK33) BEGIN
@@ -830,7 +855,7 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                      LPC_BUFFER <= REG_00EF_READ;
                   END IF;
                WHEN XENIUM_03F8(15 DOWNTO 3) & o"5" => --x"03FD"
-                  LPC_BUFFER <= "00" & TX_IDLE & '0' & x"0"; -- LSR: THRE (bit 5)
+                  LPC_BUFFER <= "00" & TX_READY & '0' & x"0"; -- LSR: THRE (bit 5)
                WHEN XENIUM_03F8(15 DOWNTO 3) & o"7" => --x"03FF"
                   LPC_BUFFER <= REG_03FF; -- SCR
                WHEN OTHERS =>
@@ -884,7 +909,7 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                      END IF;
                   END IF;
                WHEN XENIUM_03F8(15 DOWNTO 3) & o"0" => --x"03F8"
-                  IF TX_START = '0' AND TX_IDLE = '1' THEN
+                  IF TX_START = '0' AND TX_READY = '1' THEN
                      TX_START <= '1';
                      TX_BYTE <= LPC_BUFFER; -- THR
                   END IF;
