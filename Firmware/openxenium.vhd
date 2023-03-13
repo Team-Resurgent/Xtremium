@@ -250,6 +250,7 @@ ARCHITECTURE Behavioral OF openxenium IS
    CONSTANT SDP_CFI_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"98";
    CONSTANT SDP_TSC_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"99";
    CONSTANT SDP_WRITE_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"A0";
+   CONSTANT SDP_WRITE_UNLOCK_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"20";
    CONSTANT SDP_ERASE_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"80";
    CONSTANT SDP_ERASE_SECTOR_DATA : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"30";
    TYPE SDP_CFI_ROM_TYPE IS ARRAY (16#10# TO 16#7F#) OF STD_LOGIC_VECTOR (7 DOWNTO 0);
@@ -378,9 +379,11 @@ ARCHITECTURE Behavioral OF openxenium IS
    TYPE SDP_WRITE_TYPE IS (
    OFF,
    BYTE,
+   UNLOCK,
    ERASE
    );
    SIGNAL SDP_WRITE : SDP_WRITE_TYPE := OFF;
+   SIGNAL SDP_WRITE_INHIBIT : STD_LOGIC := '0';
    SIGNAL SDP_COUNT : INTEGER RANGE 0 TO 4 := 0;
    SIGNAL ERASE_END : STD_LOGIC := '0';
    TYPE ERASE_END_STATE_MACHINE IS (
@@ -523,6 +526,7 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
       A20MLEVEL <= TSOPBOOT;
       SDP_READ <= OFF;
       SDP_WRITE <= OFF;
+      SDP_WRITE_INHIBIT <= '0';
       SDP_COUNT <= 0;
       ERASE_END <= '0';
       ERASE_END_CURRENT_STATE <= START;
@@ -610,7 +614,7 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
             CYCLE_TYPE <= MEM_WRITE;
             COUNT <= 7;
             LPC_CURRENT_STATE <= ADDRESS;
-            IF SDP_WRITE /= OFF THEN
+            IF SDP_WRITE /= OFF AND SDP_WRITE_INHIBIT = '0' THEN
                QPI_BUFFER(11 DOWNTO 4) <= QPI_INST_WR_EN;
                QPI_EN <= OUTPUT;
             END IF;
@@ -647,7 +651,7 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                END IF;
             END IF;
          ELSIF COUNT = 6 THEN
-            IF SDP_WRITE /= OFF THEN
+            IF SDP_WRITE /= OFF AND SDP_WRITE_INHIBIT = '0' THEN
                QPI_EN <= OFF;
             END IF;
             IF QPI_BUSY = '1' THEN
@@ -667,7 +671,7 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                QPI_BUFFER(7 DOWNTO 0) <= QPI_INST_READ;
             END IF;
          ELSIF COUNT = 5 THEN
-            IF QPI_BUSY = '1' OR SDP_WRITE /= OFF OR (SDP_READ = OFF AND CYCLE_TYPE = MEM_READ) THEN
+            IF QPI_BUSY = '1' OR (SDP_WRITE /= OFF AND SDP_WRITE_INHIBIT = '0') OR (SDP_READ = OFF AND CYCLE_TYPE = MEM_READ) THEN
                QPI_EN <= OUTPUT;
             END IF;
             --BANK SELECTION
@@ -923,8 +927,22 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                END IF;
             ELSIF CYCLE_TYPE = MEM_WRITE THEN
                IF SDP_WRITE /= OFF THEN
-                  QPI_BUSY <= '1';
-                  QPI_EN <= OFF;
+                  IF SDP_WRITE_INHIBIT = '0' THEN
+                     QPI_BUSY <= '1';
+                     QPI_EN <= OFF;
+                     IF SDP_WRITE = UNLOCK THEN
+                        SDP_WRITE_INHIBIT <= '1';
+                     ELSE
+                        SDP_WRITE <= OFF;
+                     END IF;
+                  ELSE
+                     SDP_WRITE_INHIBIT <= '0';
+                     IF SDP_WRITE = UNLOCK THEN
+                        IF LPC_BUFFER /= SDP_WRITE_DATA THEN --x"A0"
+                           SDP_WRITE <= OFF;
+                        END IF;
+                     END IF;
+                  END IF;
                ELSIF SDP_READ /= OFF THEN
                   IF LPC_BUFFER = SDP_RESET_DATA THEN --x"F0"
                      SDP_READ <= OFF;
@@ -944,6 +962,12 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                      ELSIF SDP_COUNT = 2 AND LPC_BUFFER = SDP_WRITE_DATA THEN --x"A0"
                         IF A20MLEVEL = '1' THEN
                            SDP_WRITE <= BYTE;
+                        END IF;
+                        SDP_COUNT <= 0;
+                     ELSIF SDP_COUNT = 2 AND LPC_BUFFER = SDP_WRITE_UNLOCK_DATA THEN --x"20"
+                        IF A20MLEVEL = '1' THEN
+                           SDP_WRITE <= UNLOCK;
+                           SDP_WRITE_INHIBIT <= '1';
                         END IF;
                         SDP_COUNT <= 0;
                      ELSIF SDP_COUNT = 2 AND LPC_BUFFER = SDP_ERASE_DATA THEN --x"80"
@@ -980,9 +1004,6 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
             LPC_CURRENT_STATE <= SYNC_COMPLETE;
          END IF;
       WHEN SYNC_COMPLETE =>
-         IF QPI_BUSY = '1' THEN
-            SDP_WRITE <= OFF;
-         END IF;
          IF TX_START = '1' THEN
             TX_START <= '0';
          END IF;
