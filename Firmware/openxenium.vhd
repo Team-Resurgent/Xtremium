@@ -898,9 +898,9 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                   IF LPC_BUFFER(3 DOWNTO 0) = x"0" THEN
                      -- Bank 0 will disable state machine and release D0 & A20M# to boot from TSOP after reset.
                      TSOPBOOT <= '1';
-                  ELSIF QPI_LPC_MUTEX = '0' THEN
+                  ELSIF QPI_LPC_MUTEX = '0' AND SDP_READ = OFF AND SDP_WRITE = OFF THEN
                      IF LPC_BUFFER(3 DOWNTO 2) = "11" THEN
-                        IF QPI_CHIP /= LPC_BUFFER(1 DOWNTO 0) AND SDP_READ = OFF THEN
+                        IF QPI_CHIP /= LPC_BUFFER(1 DOWNTO 0) THEN
                            QPI_CHIP <= LPC_BUFFER(1 DOWNTO 0);
                            QPI_BUSY <= '1';
                         END IF;
