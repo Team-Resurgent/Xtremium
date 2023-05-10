@@ -148,16 +148,16 @@ ARCHITECTURE Behavioral OF openxenium IS
       PORT (
          TX_CLK : IN STD_LOGIC;
          TX_BYTE : IN STD_LOGIC_VECTOR (7 DOWNTO 0);
-         TX_START : IN STD_LOGIC;
-         TX_IDLE : OUT STD_LOGIC;
+         TX_READ : IN STD_LOGIC;
+         TX_READY : OUT STD_LOGIC;
          TX : OUT STD_LOGIC
       );
    END COMPONENT;
    SIGNAL TX_CLK : STD_LOGIC;
    SIGNAL TX_BYTE : STD_LOGIC_VECTOR (7 DOWNTO 0);
-   SIGNAL TX_START : STD_LOGIC := '0';
-   SIGNAL TX_IDLE : STD_LOGIC;
+   SIGNAL TX_READ : STD_LOGIC := '0';
    SIGNAL TX_READY : STD_LOGIC;
+   SIGNAL TX_READY_DCM : STD_LOGIC;
 
    TYPE BUS_ARB_TYPE IS (
    PENDING,
@@ -440,14 +440,14 @@ BEGIN
    UART_TX_INST : uart_tx PORT MAP (
       TX_CLK => TX_CLK,
       TX_BYTE => TX_BYTE,
-      TX_START => TX_START,
-      TX_IDLE => TX_IDLE,
+      TX_READ => TX_READ,
+      TX_READY => TX_READY,
       TX => FTDI_RXD
    );
    FTDI_TXD <= '0'; -- TODO recv
    TX_CLK <= CTR96(4); -- 3 megabaud
-   TX_READY <= '1' WHEN TX_IDLE = '1' AND DCM_LOCKED = '1' ELSE
-               '0';
+   TX_READY_DCM <= '1' WHEN TX_READY = '1' AND DCM_LOCKED = '1' ELSE
+                   '0';
 
    HEADER_CS <= REG_00EF_WRITE(5);
    HEADER_SCK <= REG_00EF_WRITE(6);
@@ -456,7 +456,7 @@ BEGIN
    MOSFET_LED_R <= '0' WHEN TSOPBOOT = '1' ELSE
                    REG_00EE_WRITE(0);
    MOSFET_LED_G <= '0' WHEN TSOPBOOT = '1' ELSE
-                   TX_START WHEN REG_00EE_WRITE(7) = '0' AND LPC_CYCLE_UART = '1' ELSE -- UART TX activity
+                   TX_READ WHEN REG_00EE_WRITE(7) = '0' AND LPC_CYCLE_UART = '1' ELSE -- UART TX activity
                    REG_00EE_WRITE(1);
    MOSFET_LED_B <= '0' WHEN TSOPBOOT = '1' ELSE
                    REG_00EE_WRITE(2);
@@ -855,7 +855,7 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                      LPC_BUFFER <= REG_00EF_READ;
                   END IF;
                WHEN XENIUM_03F8(15 DOWNTO 3) & o"5" => --x"03FD"
-                  LPC_BUFFER <= "00" & TX_READY & '0' & x"0"; -- LSR: THRE (bit 5)
+                  LPC_BUFFER <= "00" & TX_READY_DCM & '0' & x"0"; -- LSR: THRE (bit 5)
                WHEN XENIUM_03F8(15 DOWNTO 3) & o"7" => --x"03FF"
                   LPC_BUFFER <= REG_03FF; -- SCR
                WHEN OTHERS =>
@@ -909,8 +909,8 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                      END IF;
                   END IF;
                WHEN XENIUM_03F8(15 DOWNTO 3) & o"0" => --x"03F8"
-                  IF TX_START = '0' AND TX_READY = '1' THEN
-                     TX_START <= '1';
+                  IF TX_READY_DCM = '1' THEN
+                     TX_READ <= '1';
                      TX_BYTE <= LPC_BUFFER; -- THR
                   END IF;
                WHEN XENIUM_03F8(15 DOWNTO 3) & o"7" => --x"03FF"
@@ -1029,8 +1029,8 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
             LPC_CURRENT_STATE <= SYNC_COMPLETE;
          END IF;
       WHEN SYNC_COMPLETE =>
-         IF TX_START = '1' THEN
-            TX_START <= '0';
+         IF TX_READ = '1' THEN
+            TX_READ <= '0';
          END IF;
          IF LPC_CYCLE_WRITE = '0' THEN
             LPC_CURRENT_STATE <= READ_DATA0;
