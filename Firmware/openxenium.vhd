@@ -76,6 +76,9 @@
 --**0x00EE READ:**
 --Genuine Xenium return 0x55
 --
+--**0x01EE READ:**
+--Xtremium Variant return 0x69
+--
 
 LIBRARY IEEE;
 USE IEEE.STD_LOGIC_1164.ALL;
@@ -208,9 +211,11 @@ ARCHITECTURE Behavioral OF openxenium IS
    CONSTANT XENIUM_00EC : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EC"; -- QPI Bitbang Control Register (Available when RECOVER pin remains active low)
    CONSTANT XENIUM_00ED : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00ED"; -- QPI Bitbang Data Register (Available when RECOVER pin remains active low)
    CONSTANT XENIUM_00EE : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EE"; -- RGB LED Control Register
+   CONSTANT XENIUM_01EE : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"01EE"; -- Variant Value
    CONSTANT XENIUM_00EF : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"00EF"; -- SPI Bitbang and Banking Control Register
    CONSTANT XENIUM_03F8 : STD_LOGIC_VECTOR (15 DOWNTO 0) := x"03F8"; -- UART to FTDI @ 3 megabaud via 96MHz DCM
    CONSTANT REG_00EE_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"55"; -- Genuine Xenium
+   CONSTANT REG_01EE_READ : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"69"; -- Xtremium Edition
    SIGNAL REG_00EC : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"00"; -- X,X,X,X,IN,CLK,CS,BBIO
    SIGNAL REG_00ED : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"00"; -- IN[7:4],OUT[3:0]
    SIGNAL REG_00EE_WRITE : STD_LOGIC_VECTOR (7 DOWNTO 0) := x"01"; -- NOACT,X,X,X,X,B,G,R (Red is default LED colour on power-up)
@@ -847,6 +852,8 @@ PROCESS (CLK33, LPC_RST, QPI_INIT_LATCH, LPC_LFRAME, TSOPBOOT) BEGIN
                   LPC_BUFFER <= REG_00EE_READ;
                   -- Deassert the A20M# pin on the CPU.
                   A20MLEVEL <= '1';
+               WHEN XENIUM_01EE =>
+                  LPC_BUFFER <= REG_01EE_READ;
                WHEN XENIUM_00EF =>
                   IF REG_00EF_WRITE(3 DOWNTO 0) = x"B" THEN
                      LPC_BUFFER(7 DOWNTO 4) <= REG_00EF_READ(7 DOWNTO 4);
